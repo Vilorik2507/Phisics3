@@ -1,9 +1,13 @@
 {
     "Version": "1.2",
     "Data": {
-        "Source": "c:\\users\\eeliz\\onedrive\\документы\\github\\phisics3\\phisics3\\ball.cpp",
+        "Source": "c:\\users\\eeliz\\desktop\\github\\phisics3\\phisics3\\ball.cpp",
         "ProvidedModule": "",
-        "Includes": [],
+        "Includes": [
+            "c:\\users\\eeliz\\desktop\\github\\phisics3\\phisics3\\ball.h",
+            "c:\\program files\\sfml-2.6.2\\include\\sfml\\system\\vector2.hpp",
+            "c:\\program files\\sfml-2.6.2\\include\\sfml\\system\\vector2.inl"
+        ],
         "ImportedModules": [],
         "ImportedHeaderUnits": []
     }

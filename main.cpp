@@ -1,36 +1,45 @@
 
 #include <SFML/Graphics.hpp>
+#include "Ball.h"
 
 int main()
 {
-    // Создаем окно размером 1000 на 700 пикселей
     sf::RenderWindow window(
         sf::VideoMode(1000, 700),
         "2D Physics Engine"
     );
 
-    // Ограничиваем частоту кадров
     window.setFramerateLimit(60);
 
-    // Главный цикл приложения
+    Ball ball(
+        sf::Vector2f(200.f, 200.f),
+        sf::Vector2f(100.f, 50.f),
+        20.f,
+        1.f
+    );
+
+    sf::Clock clock;
+
     while (window.isOpen())
     {
         sf::Event event;
 
-        // Обрабатываем события окна
         while (window.pollEvent(event))
         {
-            // Проверяем, нажал ли пользователь крестик
             if (event.type == sf::Event::Closed)
             {
                 window.close();
             }
         }
 
-        // Очищаем экран
+        float dt = clock.restart().asSeconds();
+
+        ball.update(dt);
+
         window.clear(sf::Color(30, 30, 40));
 
-        // Показываем изображение
+        ball.draw(window);
+
         window.display();
     }
 
