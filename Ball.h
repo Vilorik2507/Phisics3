@@ -15,5 +15,8 @@ public:
 	float getRadius() const;
 	float getMass() const;
 
+	void setPosition(sf::Vector2f newPosition);
+	void setVelocity(sf::Vector2f newVelocity);
+
 	void draw(sf::RenderWindow& window) const;
 };

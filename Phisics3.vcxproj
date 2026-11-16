@@ -146,6 +146,7 @@ sfml-window-d.lib
   <ItemGroup>
     <ClCompile Include="Ball.cpp" />
     <ClCompile Include="CCD.cpp" />
+    <ClCompile Include="Collision.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="MultiRate.cpp" />
     <ClCompile Include="MultiRate.h" />
@@ -155,6 +156,7 @@ sfml-window-d.lib
   <ItemGroup>
     <ClInclude Include="Ball.h" />
     <ClInclude Include="CCD.h" />
+    <ClInclude Include="Collision.h" />
     <ClInclude Include="Wall.h" />
     <ClInclude Include="World.h" />
   </ItemGroup>

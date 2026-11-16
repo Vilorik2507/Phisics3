@@ -1,4 +1,5 @@
 ﻿  Ball.cpp
+  Collision.cpp
   main.cpp
   Создание кода...
 x64\Debug\MultiRate.obj : warning LNK4042: объект указан более одного раза; лишние не учитываются

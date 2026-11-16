@@ -25,6 +25,13 @@ float Ball::getMass() const {
 	return mass;
 }
 
+void Ball::setPosition(sf::Vector2f newPosition) {
+	position = newPosition;
+}
+void Ball::setVelocity(sf::Vector2f newVelocity) {
+	velocity = newVelocity;
+}
+
 void Ball::draw(sf::RenderWindow& window) const {
 	sf::CircleShape circle(radius);
 	circle.setPosition(position.x - radius, position.y - radius);
