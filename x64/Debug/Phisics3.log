@@ -1,0 +1,10 @@
+﻿  Ball.cpp
+  CCD.cpp
+  main.cpp
+  MultiRate.cpp
+  MultiRate.h
+  Wall.cpp
+  World.cpp
+  Создание кода...
+x64\Debug\MultiRate.obj : warning LNK4042: объект указан более одного раза; лишние не учитываются
+  Phisics3.vcxproj -> C:\Users\eeliz\OneDrive\Документы\GitHub\Phisics3\x64\Debug\Phisics3.exe

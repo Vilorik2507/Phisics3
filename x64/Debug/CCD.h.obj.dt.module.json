@@ -1,0 +1,14 @@
+{
+    "version": 1,
+    "revision": 0,
+    "rules": [
+        {
+            "primary-output": "x64\\Debug\\CCD.obj",
+            "outputs": [
+                "x64\\Debug\\CCD.h.obj.dt.module.json",
+                "x64\\Debug\\CCD.h.obj.dt.d.json"
+            ],
+            "requires": []
+        }
+    ]
+}
