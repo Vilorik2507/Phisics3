@@ -1,8 +1,7 @@
 
 #include <SFML/Graphics.hpp>
-#include "Ball.h"
-#include "Wall.h"
-#include "Collision.h"
+#include "CCD.h"
+#include "World.h"
 
 int main()
 {
@@ -13,21 +12,37 @@ int main()
 
     window.setFramerateLimit(60);
 
-    Ball ball1(
-        sf::Vector2f(200.f, 300.f),
-        sf::Vector2f(150.f, 0.f),
-        25.f,
-        1.f
-    );
+    World world;
 
-    Ball ball2(
-        sf::Vector2f(600.f, 300.f),
-        sf::Vector2f(-150.f, 0.f),
-        25.f,
-        1.f
-    );
+    world.addWall(Wall(
+        sf::Vector2f(100.f, 100.f),
+        sf::Vector2f(10.f, 450.f)
+    ));
 
-    Wall wall(sf::Vector2f(600.f, 100.f), sf::Vector2f(15.f, 450.f));
+    world.addWall(Wall(
+        sf::Vector2f(600.f, 100.f),
+        sf::Vector2f(10.f, 450.f)
+    ));
+
+    world.addWall(Wall(
+        sf::Vector2f(200.f, 500.f),
+        sf::Vector2f(400.f, 10.f)
+    ));
+
+    world.addBall(Ball(
+        sf::Vector2f(300.f, 300.f),
+        sf::Vector2f(100.f, 0.f),
+        20.f,
+        1.f
+    ));
+
+    world.addBall(Ball(
+        sf::Vector2f(335.f, 300.f),
+        sf::Vector2f(-100.f, 0.f),
+        20.f,
+        1.f
+    ));
+
     sf::Clock clock;
 
     while (window.isOpen())
@@ -44,15 +59,14 @@ int main()
 
         float dt = clock.restart().asSeconds();
 
-        ball1.update(dt);
-        ball2.update(dt);
-        resolveCollision(ball1, ball2, 0.8f);
+        // Обновляем физический мир
+        //world.update(dt, 0.8f);
+        world.updateWithFullCCD(dt, 0.8f);
 
         window.clear(sf::Color(30, 30, 40));
 
-        ball1.draw(window);
-        ball2.draw(window);
-        wall.draw(window);
+        // Рисуем все объекты
+        world.draw(window);
 
         window.display();
     }
