@@ -42,7 +42,19 @@ int main()
         20.f,
         1.f
     ));
+    world.addBox(Box(
+        sf::Vector2f(400.f, 300.f),
+        sf::Vector2f(80.f, 40.f),
+        sf::Vector2f(0.f, 0.f),
+        5.f
+    ));
 
+    world.addBox(Box(
+        sf::Vector2f(550.f, 300.f),
+        sf::Vector2f(-50.f, 0.f),
+        sf::Vector2f(0.f, 0.f),
+        5.f
+    ));
     sf::Clock clock;
 
     while (window.isOpen())

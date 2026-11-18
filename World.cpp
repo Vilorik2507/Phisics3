@@ -10,6 +10,10 @@ void World::addBall(const Ball& ball)
 void World::addWall(const Wall& wall) {
     walls.push_back(wall);
 }
+void World::addBox(const Box& box)
+{
+    boxes.push_back(box);
+}
 void World::update(float dt, float restitution)
 {
     // Обновляем положение шариков
@@ -17,7 +21,10 @@ void World::update(float dt, float restitution)
     {
         ball.update(dt);
     }
-
+    for (Box& box : boxes)
+    {
+        box.update(dt);
+    }
     // Проверяем столкновения шариков друг с другом
     for (size_t i = 0; i < balls.size(); i++)
     {
@@ -84,6 +91,9 @@ void World::draw(sf::RenderWindow& window) const
     for (const Wall& wall : walls) {
         wall.draw(window);
     }
+    for (Box& box : boxes) {
+        box.draw(window);
+    }
 }
 
 void World::updateWithFullCCD(float dt, float restitution)
@@ -94,4 +104,8 @@ void World::updateWithFullCCD(float dt, float restitution)
         dt,
         restitution
     );
+    for (Box& box : boxes)
+    {
+        box.update(dt);
+    }
 }
