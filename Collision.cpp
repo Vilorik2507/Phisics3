@@ -1,92 +1,496 @@
+
 #include "Collision.h"
 
+#include "PhysicsGroup.h"
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
-Collision checkCollision(const Ball& a, const Ball& b) {
-	Collision result{ false, sf::Vector2f(0.f,0.f), 0.f };
-	sf::Vector2f difference = b.getPosition() - a.getPosition();
-	float distanceSquared = difference.x * difference.x + difference.y * difference.y;
-	float radiusSum = a.getRadius() + b.getRadius();
-	if (distanceSquared >= radiusSum * radiusSum) {//^2
-		return result;
-	}
-	float distance = std::sqrt(distanceSquared);
-	result.isColliding = true;
-	if (distance > 0.0010f) {
-		result.normal = difference / distance;
-	}
-	else {
-		result.normal = sf::Vector2f(1.f, 0.f);
-	}
-	result.penetration = radiusSum - distance;
-
-	return result;
-}
-void resolveCollision(Ball& a,Ball& b,float restitution)
+namespace
 {
-    Collision collision = checkCollision(a, b);
+    constexpr float EPSILON = 0.0001f;
+
+    constexpr float POSITION_SLOP = 0.01f;
+    constexpr float POSITION_CORRECTION = 0.8f;
+
+    constexpr float RESTITUTION_THRESHOLD = 20.f;
+
+    // -------------------------------------------------
+    // VECTOR HELPERS
+    // -------------------------------------------------
+
+    float dot(sf::Vector2f a, sf::Vector2f b)
+    {
+        return a.x * b.x + a.y * b.y;
+    }
+
+    float lengthSquared(sf::Vector2f value)
+    {
+        return dot(value, value);
+    }
+
+    float length(sf::Vector2f value)
+    {
+        return std::sqrt(lengthSquared(value));
+    }
+
+    sf::Vector2f normalize(sf::Vector2f value)
+    {
+        float valueLength = length(value);
+
+        if (valueLength <= EPSILON)
+            return { 0.f, 0.f };
+
+        return value / valueLength;
+    }
+
+    bool isValidVector(sf::Vector2f value)
+    {
+        return std::isfinite(value.x) &&
+            std::isfinite(value.y);
+    }
+
+    float safeRestitution(float restitution)
+    {
+        if (!std::isfinite(restitution))
+            return 0.f;
+
+        return std::clamp(restitution, 0.f, 1.f);
+    }
+
+    // -------------------------------------------------
+    // MASS HELPERS
+    // -------------------------------------------------
+
+    float inverseMass(const Ball& ball)
+    {
+        if (ball.getGroup() == PhysicsGroup::Static)
+            return 0.f;
+
+        float mass = ball.getMass();
+
+        if (!std::isfinite(mass) || mass <= EPSILON)
+            return 0.f;
+
+        return 1.f / mass;
+    }
+
+    float inverseMass(const Box& box)
+    {
+        if (box.getGroup() == PhysicsGroup::Static)
+            return 0.f;
+
+        float mass = box.getMass();
+
+        if (!std::isfinite(mass) || mass <= EPSILON)
+            return 0.f;
+
+        return 1.f / mass;
+    }
+
+    // -------------------------------------------------
+    // IMPULSE HELPERS
+    // -------------------------------------------------
+
+    void applyBallImpulse(
+        Ball& a,
+        Ball& b,
+        sf::Vector2f normal,
+        float restitution
+    )
+    {
+        float invMassA = inverseMass(a);
+        float invMassB = inverseMass(b);
+
+        float totalInverseMass = invMassA + invMassB;
+
+        if (totalInverseMass <= EPSILON)
+            return;
+
+        sf::Vector2f relativeVelocity =
+            b.getVelocity() - a.getVelocity();
+
+        float velocityAlongNormal =
+            dot(relativeVelocity, normal);
+
+        // Bodies are already separating.
+        if (velocityAlongNormal >= 0.f)
+            return;
+
+        float e = safeRestitution(restitution);
+
+        if (std::abs(velocityAlongNormal) < RESTITUTION_THRESHOLD)
+            e = 0.f;
+
+        float impulseMagnitude =
+            -(1.f + e) * velocityAlongNormal /
+            totalInverseMass;
+
+        sf::Vector2f impulse =
+            normal * impulseMagnitude;
+
+        if (invMassA > 0.f)
+        {
+            a.setVelocity(
+                a.getVelocity() - impulse * invMassA
+            );
+        }
+
+        if (invMassB > 0.f)
+        {
+            b.setVelocity(
+                b.getVelocity() + impulse * invMassB
+            );
+        }
+    }
+
+    void applyBoxImpulse(
+        Box& a,
+        Box& b,
+        sf::Vector2f normal,
+        float restitution
+    )
+    {
+        float invMassA = inverseMass(a);
+        float invMassB = inverseMass(b);
+
+        float totalInverseMass = invMassA + invMassB;
+
+        if (totalInverseMass <= EPSILON)
+            return;
+
+        sf::Vector2f relativeVelocity =
+            b.getVelocity() - a.getVelocity();
+
+        float velocityAlongNormal =
+            dot(relativeVelocity, normal);
+
+        if (velocityAlongNormal >= 0.f)
+            return;
+
+        float e = safeRestitution(restitution);
+
+        if (std::abs(velocityAlongNormal) < RESTITUTION_THRESHOLD)
+            e = 0.f;
+
+        float impulseMagnitude =
+            -(1.f + e) * velocityAlongNormal /
+            totalInverseMass;
+
+        sf::Vector2f impulse =
+            normal * impulseMagnitude;
+
+        if (invMassA > 0.f)
+        {
+            a.setVelocity(
+                a.getVelocity() - impulse * invMassA
+            );
+        }
+
+        if (invMassB > 0.f)
+        {
+            b.setVelocity(
+                b.getVelocity() + impulse * invMassB
+            );
+        }
+    }
+
+    void applyBoxWallImpulse(
+        Box& box,
+        sf::Vector2f normal,
+        float restitution
+    )
+    {
+        if (inverseMass(box) <= EPSILON)
+            return;
+
+        float velocityAlongNormal =
+            dot(box.getVelocity(), normal);
+
+        if (velocityAlongNormal >= 0.f)
+            return;
+
+        float e = safeRestitution(restitution);
+
+        if (std::abs(velocityAlongNormal) < RESTITUTION_THRESHOLD)
+            e = 0.f;
+
+        box.setVelocity(
+            box.getVelocity() -
+            normal * ((1.f + e) * velocityAlongNormal)
+        );
+    }
+
+    // -------------------------------------------------
+    // POSITION CORRECTION
+    // -------------------------------------------------
+
+    void correctBallBallPenetration(
+        Ball& a,
+        Ball& b,
+        const Collision& collision
+    )
+    {
+        float invMassA = inverseMass(a);
+        float invMassB = inverseMass(b);
+
+        float totalInverseMass = invMassA + invMassB;
+
+        if (totalInverseMass <= EPSILON)
+            return;
+
+        float correctionMagnitude =
+            std::max(
+                collision.penetration - POSITION_SLOP,
+                0.f
+            );
+
+        correctionMagnitude *= POSITION_CORRECTION;
+        correctionMagnitude /= totalInverseMass;
+
+        sf::Vector2f correction =
+            collision.normal * correctionMagnitude;
+
+        if (invMassA > 0.f)
+        {
+            a.setPosition(
+                a.getPosition() - correction * invMassA
+            );
+        }
+
+        if (invMassB > 0.f)
+        {
+            b.setPosition(
+                b.getPosition() + correction * invMassB
+            );
+        }
+    }
+}
+
+// =====================================================
+// BALL - BALL
+// =====================================================
+
+Collision checkCollision(
+    const Ball& a,
+    const Ball& b
+)
+{
+    Collision result;
+
+    sf::Vector2f positionA = a.getPosition();
+    sf::Vector2f positionB = b.getPosition();
+
+    float radiusA = a.getRadius();
+    float radiusB = b.getRadius();
+
+    if (!isValidVector(positionA) ||
+        !isValidVector(positionB) ||
+        !std::isfinite(radiusA) ||
+        !std::isfinite(radiusB) ||
+        radiusA <= 0.f ||
+        radiusB <= 0.f)
+    {
+        return result;
+    }
+
+    sf::Vector2f difference =
+        positionB - positionA;
+
+    float radiusSum = radiusA + radiusB;
+
+    float distanceSquared =
+        lengthSquared(difference);
+
+    if (distanceSquared >= radiusSum * radiusSum)
+        return result;
+
+    float distance =
+        std::sqrt(distanceSquared);
+
+    result.isColliding = true;
+
+    if (distance > EPSILON)
+    {
+        result.normal = difference / distance;
+    }
+    else
+    {
+        // Deterministic fallback for coincident centers.
+        result.normal = { 1.f, 0.f };
+    }
+
+    result.penetration =
+        radiusSum - distance;
+
+    return result;
+}
+
+void resolveCollision(
+    Ball& a,
+    Ball& b,
+    float restitution
+)
+{
+    Collision collision =
+        checkCollision(a, b);
 
     if (!collision.isColliding)
-    {
         return;
-    }
 
-    sf::Vector2f normal = collision.normal;
-
-    sf::Vector2f relativeVelocity =
-        b.getVelocity() - a.getVelocity();
-
-    float velocityAlongNormal =
-        relativeVelocity.x * normal.x +
-        relativeVelocity.y * normal.y;
-
-    if (velocityAlongNormal > 0.f)
-    {
-        return;
-    }
-
-    float inverseMassA = 1.f / a.getMass();
-    float inverseMassB = 1.f / b.getMass();
-
-    float impulseMagnitude =
-        -(1.f + restitution) * velocityAlongNormal /
-        (inverseMassA + inverseMassB);
-
-    sf::Vector2f impulse = normal * impulseMagnitude;
-
-    a.setVelocity(
-        a.getVelocity() - impulse * inverseMassA
+    applyBallImpulse(
+        a,
+        b,
+        collision.normal,
+        restitution
     );
 
-    b.setVelocity(
-        b.getVelocity() + impulse * inverseMassB
-    );
-
-    float correctionPercent = 0.8f;
-    float correctionSlop = 0.01f;
-
-    float correctionMagnitude =
-        std::max(
-            collision.penetration - correctionSlop,
-            0.f
-        ) /
-        (inverseMassA + inverseMassB) *
-        correctionPercent;
-
-    sf::Vector2f correction =
-        normal * correctionMagnitude;
-
-    a.setPosition(
-        a.getPosition() - correction * inverseMassA
-    );
-
-    b.setPosition(
-        b.getPosition() + correction * inverseMassB
+    correctBallBallPenetration(
+        a,
+        b,
+        collision
     );
 }
+
+BallSweepResult checkBallBallCCD(
+    const Ball& a,
+    const Ball& b,
+    float dt
+)
+{
+    BallSweepResult result;
+
+    if (!std::isfinite(dt) || dt <= 0.f)
+        return result;
+
+    if (a.getGroup() == PhysicsGroup::Static &&
+        b.getGroup() == PhysicsGroup::Static)
+    {
+        return result;
+    }
+
+    sf::Vector2f positionA = a.getPosition();
+    sf::Vector2f positionB = b.getPosition();
+
+    sf::Vector2f velocityA = a.getVelocity();
+    sf::Vector2f velocityB = b.getVelocity();
+
+    float radiusA = a.getRadius();
+    float radiusB = b.getRadius();
+
+    if (!isValidVector(positionA) ||
+        !isValidVector(positionB) ||
+        !isValidVector(velocityA) ||
+        !isValidVector(velocityB) ||
+        !std::isfinite(radiusA) ||
+        !std::isfinite(radiusB) ||
+        radiusA <= 0.f ||
+        radiusB <= 0.f)
+    {
+        return result;
+    }
+
+    // Относительное положение и скорость.
+    sf::Vector2f relativePosition =
+        positionB - positionA;
+
+    sf::Vector2f relativeVelocity =
+        velocityB - velocityA;
+
+    float radiusSum = radiusA + radiusB;
+
+    // Уравнение:
+    // |relativePosition + relativeVelocity * t|^2
+    // = radiusSum^2
+
+    float c =
+        dot(relativePosition, relativePosition) -
+        radiusSum * radiusSum;
+
+    // Уже пересекаются: это обрабатывает
+    // дискретный решатель.
+    if (c <= 0.f)
+        return result;
+
+    float aCoefficient =
+        dot(relativeVelocity, relativeVelocity);
+
+    if (aCoefficient <= EPSILON * EPSILON)
+        return result;
+
+    float bCoefficient =
+        2.f * dot(relativePosition, relativeVelocity);
+
+    // Шары удаляются друг от друга.
+    if (bCoefficient >= 0.f)
+        return result;
+
+    float discriminant =
+        bCoefficient * bCoefficient -
+        4.f * aCoefficient * c;
+
+    if (discriminant < 0.f)
+        return result;
+
+    float sqrtDiscriminant =
+        std::sqrt(discriminant);
+
+    float collisionTime =
+        (-bCoefficient - sqrtDiscriminant) /
+        (2.f * aCoefficient);
+
+    if (!std::isfinite(collisionTime) ||
+        collisionTime < 0.f ||
+        collisionTime > dt)
+    {
+        return result;
+    }
+
+    sf::Vector2f contactPositionA =
+        positionA + velocityA * collisionTime;
+
+    sf::Vector2f contactPositionB =
+        positionB + velocityB * collisionTime;
+
+    sf::Vector2f difference =
+        contactPositionB - contactPositionA;
+
+    float distance = length(difference);
+
+    if (distance <= EPSILON)
+        return result;
+
+    result.hit = true;
+    result.time = collisionTime;
+    result.normal = difference / distance;
+
+    return result;
+}
+
+void resolveBallBallImpact(
+    Ball& a,
+    Ball& b,
+    sf::Vector2f normal,
+    float restitution
+)
+{
+    normal = normalize(normal);
+
+    if (lengthSquared(normal) <= EPSILON)
+        return;
+
+    applyBallImpulse(
+        a,
+        b,
+        normal,
+        restitution
+    );
+}
+
+// =====================================================
+// BALL - WALL
+// =====================================================
 
 void resolveBallWallCollision(
     Ball& ball,
@@ -94,128 +498,189 @@ void resolveBallWallCollision(
     float restitution
 )
 {
-    sf::Vector2f center = ball.getPosition();
-    sf::Vector2f wallPosition = wall.getPosition();
-    sf::Vector2f wallSize = wall.getSize();
+    if (inverseMass(ball) <= EPSILON)
+        return;
+
+    sf::Vector2f circlePosition =
+        ball.getPosition();
+
+    sf::Vector2f wallPosition =
+        wall.getPosition();
+
+    sf::Vector2f wallSize =
+        wall.getSize();
 
     float radius = ball.getRadius();
 
-    // Ближайшая к центру шарика точка стены
-    float closestX = std::clamp(
-        center.x,
-        wallPosition.x,
-        wallPosition.x + wallSize.x
-    );
-
-    float closestY = std::clamp(
-        center.y,
-        wallPosition.y,
-        wallPosition.y + wallSize.y
-    );
-
-    sf::Vector2f difference(
-        center.x - closestX,
-        center.y - closestY
-    );
-
-    float distanceSquared =
-        difference.x * difference.x +
-        difference.y * difference.y;
-
-    if (distanceSquared >= radius * radius)
+    if (!isValidVector(circlePosition) ||
+        !isValidVector(wallPosition) ||
+        !isValidVector(wallSize) ||
+        !std::isfinite(radius) ||
+        radius <= 0.f ||
+        wallSize.x <= 0.f ||
+        wallSize.y <= 0.f)
     {
         return;
     }
 
-    float distance = std::sqrt(distanceSquared);
+    sf::Vector2f closestPoint(
+        std::clamp(
+            circlePosition.x,
+            wallPosition.x,
+            wallPosition.x + wallSize.x
+        ),
+        std::clamp(
+            circlePosition.y,
+            wallPosition.y,
+            wallPosition.y + wallSize.y
+        )
+    );
+
+    sf::Vector2f difference =
+        circlePosition - closestPoint;
+
+    float distanceSquared =
+        lengthSquared(difference);
+
+    if (distanceSquared >= radius * radius)
+        return;
+
+    float distance =
+        std::sqrt(distanceSquared);
 
     sf::Vector2f normal;
-    float penetration;
 
-    if (distance > 0.0001f)
+    if (distance > EPSILON)
     {
         normal = difference / distance;
-        penetration = radius - distance;
     }
     else
     {
-        // Центр шарика находится внутри прямоугольника.
-        // Выбираем ближайшую сторону стены.
+        // Circle center is inside the wall.
+        // Find the nearest wall side.
 
-        float left = center.x - wallPosition.x;
-        float right = wallPosition.x + wallSize.x - center.x;
-        float top = center.y - wallPosition.y;
-        float bottom = wallPosition.y + wallSize.y - center.y;
+        float left =
+            std::abs(circlePosition.x - wallPosition.x);
 
-        float minimum = std::min(
-            std::min(left, right),
-            std::min(top, bottom)
-        );
+        float right =
+            std::abs(
+                wallPosition.x + wallSize.x -
+                circlePosition.x
+            );
+
+        float top =
+            std::abs(circlePosition.y - wallPosition.y);
+
+        float bottom =
+            std::abs(
+                wallPosition.y + wallSize.y -
+                circlePosition.y
+            );
+
+        float minimum =
+            std::min(
+                std::min(left, right),
+                std::min(top, bottom)
+            );
 
         if (minimum == left)
-            normal = sf::Vector2f(-1.f, 0.f);
+            normal = { -1.f, 0.f };
         else if (minimum == right)
-            normal = sf::Vector2f(1.f, 0.f);
+            normal = { 1.f, 0.f };
         else if (minimum == top)
-            normal = sf::Vector2f(0.f, -1.f);
+            normal = { 0.f, -1.f };
         else
-            normal = sf::Vector2f(0.f, 1.f);
+            normal = { 0.f, 1.f };
 
-        penetration = radius + minimum;
+        distance = -minimum;
     }
 
-    // Исправляем положение шарика
+    float penetration =
+        radius - distance;
+
     ball.setPosition(
-        ball.getPosition() + normal * penetration
+        ball.getPosition() +
+        normal * penetration
     );
 
-    // Рассчитываем изменение скорости
-    sf::Vector2f velocity = ball.getVelocity();
-
     float velocityAlongNormal =
-        velocity.x * normal.x +
-        velocity.y * normal.y;
+        dot(ball.getVelocity(), normal);
 
-    // Если шарик уже движется от стены,
-    // отражать его скорость не нужно.
     if (velocityAlongNormal < 0.f)
     {
-        velocity = velocity -
-            normal * ((1.f + restitution) * velocityAlongNormal);
+        float e = safeRestitution(restitution);
 
-        ball.setVelocity(velocity);
+        if (std::abs(velocityAlongNormal) < RESTITUTION_THRESHOLD)
+            e = 0.f;
+
+        ball.setVelocity(
+            ball.getVelocity() -
+            normal * ((1.f + e) * velocityAlongNormal)
+        );
     }
 }
 
-void resolveBoxWallCollision(
-    Box& box,
-    const Wall& wall,
-    float restitution
+// =====================================================
+// BOX - WALL: COLLISION DETECTION
+// =====================================================
+
+Collision checkBoxWallCollision(
+    const Box& box,
+    const Wall& wall
 )
 {
-    sf::Vector2f boxPos = box.getPosition();
-    sf::Vector2f boxSize = box.getSize();
+    Collision result;
 
-    sf::Vector2f wallPos = wall.getPosition();
-    sf::Vector2f wallSize = wall.getSize();
+    sf::Vector2f boxPosition =
+        box.getPosition();
 
-    float boxLeft = boxPos.x - boxSize.x / 2.f;
-    float boxRight = boxPos.x + boxSize.x / 2.f;
-    float boxTop = boxPos.y - boxSize.y / 2.f;
-    float boxBottom = boxPos.y + boxSize.y / 2.f;
+    sf::Vector2f boxSize =
+        box.getSize();
 
-    float wallLeft = wallPos.x;
-    float wallRight = wallPos.x + wallSize.x;
-    float wallTop = wallPos.y;
-    float wallBottom = wallPos.y + wallSize.y;
+    sf::Vector2f wallPosition =
+        wall.getPosition();
 
-    if (boxRight <= wallLeft ||
-        boxLeft >= wallRight ||
-        boxBottom <= wallTop ||
-        boxTop >= wallBottom)
+    sf::Vector2f wallSize =
+        wall.getSize();
+
+    if (!isValidVector(boxPosition) ||
+        !isValidVector(boxSize) ||
+        !isValidVector(wallPosition) ||
+        !isValidVector(wallSize) ||
+        boxSize.x <= 0.f ||
+        boxSize.y <= 0.f ||
+        wallSize.x <= 0.f ||
+        wallSize.y <= 0.f)
     {
-        return;
+        return result;
     }
+
+    sf::Vector2f halfSize =
+        boxSize / 2.f;
+
+    float boxLeft =
+        boxPosition.x - halfSize.x;
+
+    float boxRight =
+        boxPosition.x + halfSize.x;
+
+    float boxTop =
+        boxPosition.y - halfSize.y;
+
+    float boxBottom =
+        boxPosition.y + halfSize.y;
+
+    float wallLeft =
+        wallPosition.x;
+
+    float wallRight =
+        wallPosition.x + wallSize.x;
+
+    float wallTop =
+        wallPosition.y;
+
+    float wallBottom =
+        wallPosition.y + wallSize.y;
 
     float overlapX =
         std::min(boxRight, wallRight) -
@@ -225,307 +690,1016 @@ void resolveBoxWallCollision(
         std::min(boxBottom, wallBottom) -
         std::max(boxTop, wallTop);
 
-    sf::Vector2f velocity = box.getVelocity();
+    if (overlapX <= 0.f || overlapY <= 0.f)
+        return result;
+
+    result.isColliding = true;
 
     if (overlapX < overlapY)
     {
-        if (boxPos.x < wallPos.x + wallSize.x / 2.f)
-        {
-            boxPos.x -= overlapX;
-            if (velocity.x > 0.f)
-                velocity.x = -velocity.x * restitution;
-        }
+        if (boxPosition.x < wallPosition.x + wallSize.x / 2.f)
+            result.normal = { -1.f, 0.f };
+        else if (boxPosition.x > wallPosition.x + wallSize.x / 2.f)
+            result.normal = { 1.f, 0.f };
         else
-        {
-            boxPos.x += overlapX;
-            if (velocity.x < 0.f)
-                velocity.x = -velocity.x * restitution;
-        }
+            result.normal =
+            box.getVelocity().x >= 0.f
+            ? sf::Vector2f(-1.f, 0.f)
+            : sf::Vector2f(1.f, 0.f);
+
+        result.penetration = overlapX;
     }
     else
     {
-        if (boxPos.y < wallPos.y + wallSize.y / 2.f)
-        {
-            boxPos.y -= overlapY;
-            if (velocity.y > 0.f)
-                velocity.y = -velocity.y * restitution;
-        }
+        if (boxPosition.y < wallPosition.y + wallSize.y / 2.f)
+            result.normal = { 0.f, -1.f };
+        else if (boxPosition.y > wallPosition.y + wallSize.y / 2.f)
+            result.normal = { 0.f, 1.f };
         else
-        {
-            boxPos.y += overlapY;
-            if (velocity.y < 0.f)
-                velocity.y = -velocity.y * restitution;
-        }
+            result.normal =
+            box.getVelocity().y >= 0.f
+            ? sf::Vector2f(0.f, -1.f)
+            : sf::Vector2f(0.f, 1.f);
+
+        result.penetration = overlapY;
     }
 
-    box.setPosition(boxPos);
-    box.setVelocity(velocity);
+    return result;
 }
 
+// =====================================================
+// BOX - WALL: POSITION CORRECTION
+// =====================================================
 
-void resolveBoxBoxCollision(Box& a, Box& b, float restitution)
+void correctBoxWallPenetration(
+    Box& box,
+    const Collision& collision
+)
 {
-    sf::Vector2f posA = a.getPosition();
-    sf::Vector2f posB = b.getPosition();
+    if (!collision.isColliding ||
+        inverseMass(box) <= EPSILON)
+    {
+        return;
+    }
+
+    float correctionMagnitude =
+        std::max(
+            collision.penetration - POSITION_SLOP,
+            0.f
+        ) * POSITION_CORRECTION;
+
+    box.setPosition(
+        box.getPosition() +
+        collision.normal * correctionMagnitude
+    );
+}
+
+// =====================================================
+// BOX - WALL: RESOLUTION
+// =====================================================
+
+void resolveBoxWallCollision(
+    Box& box,
+    const Wall& wall,
+    float restitution
+)
+{
+    Collision collision =
+        checkBoxWallCollision(box, wall);
+
+    if (!collision.isColliding)
+        return;
+
+    correctBoxWallPenetration(
+        box,
+        collision
+    );
+
+    applyBoxWallImpulse(
+        box,
+        collision.normal,
+        restitution
+    );
+}
+
+// =====================================================
+// BOX - BOX: COLLISION DETECTION
+// =====================================================
+
+Collision checkBoxBoxCollision(
+    const Box& a,
+    const Box& b
+)
+{
+    Collision result;
+
+    sf::Vector2f positionA =
+        a.getPosition();
+
+    sf::Vector2f positionB =
+        b.getPosition();
+
+    sf::Vector2f sizeA =
+        a.getSize();
+
+    sf::Vector2f sizeB =
+        b.getSize();
+
+    if (!isValidVector(positionA) ||
+        !isValidVector(positionB) ||
+        !isValidVector(sizeA) ||
+        !isValidVector(sizeB) ||
+        sizeA.x <= 0.f ||
+        sizeA.y <= 0.f ||
+        sizeB.x <= 0.f ||
+        sizeB.y <= 0.f)
+    {
+        return result;
+    }
+
+    sf::Vector2f difference =
+        positionB - positionA;
+
+    sf::Vector2f halfA =
+        sizeA / 2.f;
+
+    sf::Vector2f halfB =
+        sizeB / 2.f;
+
+    float overlapX =
+        halfA.x + halfB.x -
+        std::abs(difference.x);
+
+    float overlapY =
+        halfA.y + halfB.y -
+        std::abs(difference.y);
+
+    if (overlapX <= 0.f || overlapY <= 0.f)
+        return result;
+
+    result.isColliding = true;
+
+    if (overlapX < overlapY)
+    {
+        result.normal =
+            difference.x >= 0.f
+            ? sf::Vector2f(1.f, 0.f)
+            : sf::Vector2f(-1.f, 0.f);
+
+        result.penetration = overlapX;
+    }
+    else
+    {
+        result.normal =
+            difference.y >= 0.f
+            ? sf::Vector2f(0.f, 1.f)
+            : sf::Vector2f(0.f, -1.f);
+
+        result.penetration = overlapY;
+    }
+
+    return result;
+}
+
+// =====================================================
+// BOX - BOX: POSITION CORRECTION
+// =====================================================
+
+void correctBoxBoxPenetration(
+    Box& a,
+    Box& b,
+    const Collision& collision
+)
+{
+    if (!collision.isColliding)
+        return;
+
+    float invMassA =
+        inverseMass(a);
+
+    float invMassB =
+        inverseMass(b);
+
+    float totalInverseMass =
+        invMassA + invMassB;
+
+    if (totalInverseMass <= EPSILON)
+        return;
+
+    float correctionMagnitude =
+        std::max(
+            collision.penetration - POSITION_SLOP,
+            0.f
+        );
+
+    correctionMagnitude *= POSITION_CORRECTION;
+    correctionMagnitude /= totalInverseMass;
+
+    sf::Vector2f correction =
+        collision.normal * correctionMagnitude;
+
+    if (invMassA > 0.f)
+    {
+        a.setPosition(
+            a.getPosition() -
+            correction * invMassA
+        );
+    }
+
+    if (invMassB > 0.f)
+    {
+        b.setPosition(
+            b.getPosition() +
+            correction * invMassB
+        );
+    }
+}
+
+// =====================================================
+// BOX - BOX: IMPACT
+// =====================================================
+
+void resolveBoxBoxImpact(
+    Box& a,
+    Box& b,
+    sf::Vector2f normal,
+    float restitution
+)
+{
+    normal = normalize(normal);
+
+    if (lengthSquared(normal) <= EPSILON)
+        return;
+
+    applyBoxImpulse(
+        a,
+        b,
+        normal,
+        restitution
+    );
+}
+
+// =====================================================
+// BOX - BOX: RESOLUTION
+// =====================================================
+
+void resolveBoxBoxCollision(
+    Box& a,
+    Box& b,
+    float restitution
+)
+{
+    Collision collision =
+        checkBoxBoxCollision(a, b);
+
+    if (!collision.isColliding)
+        return;
+
+    correctBoxBoxPenetration(
+        a,
+        b,
+        collision
+    );
+
+    resolveBoxBoxImpact(
+        a,
+        b,
+        collision.normal,
+        restitution
+    );
+}
+
+// =====================================================
+// CCD: BOX - BOX
+// =====================================================
+
+
+BoxSweepResult checkBoxBoxCCD(
+    const Box& a,
+    const Box& b,
+    float dt
+)
+{
+    BoxSweepResult result;
+
+    if (!std::isfinite(dt) || dt <= 0.f)
+        return result;
+
+    if (a.getGroup() == PhysicsGroup::Static &&
+        b.getGroup() == PhysicsGroup::Static)
+        return result;
+
+    sf::Vector2f positionA = a.getPosition();
+    sf::Vector2f positionB = b.getPosition();
+
+    sf::Vector2f velocityA = a.getVelocity();
+    sf::Vector2f velocityB = b.getVelocity();
+
+    // Статические тела не перемещаются,
+    // даже если в их velocity случайно записано значение.
+    if (a.getGroup() == PhysicsGroup::Static)
+        velocityA = { 0.f, 0.f };
+
+    if (b.getGroup() == PhysicsGroup::Static)
+        velocityB = { 0.f, 0.f };
 
     sf::Vector2f sizeA = a.getSize();
     sf::Vector2f sizeB = b.getSize();
 
-    sf::Vector2f velA = a.getVelocity();
-    sf::Vector2f velB = b.getVelocity();
+    if (!isValidVector(positionA) ||
+        !isValidVector(positionB) ||
+        !isValidVector(velocityA) ||
+        !isValidVector(velocityB) ||
+        !isValidVector(sizeA) ||
+        !isValidVector(sizeB) ||
+        sizeA.x <= 0.f || sizeA.y <= 0.f ||
+        sizeB.x <= 0.f || sizeB.y <= 0.f)
+        return result;
 
-    float overlapX =
-        (sizeA.x + sizeB.x) * 0.5f -
-        std::abs(posA.x - posB.x);
+    if (checkBoxBoxCollision(a, b).isColliding)
+        return result;
 
-    float overlapY =
-        (sizeA.y + sizeB.y) * 0.5f -
-        std::abs(posA.y - posB.y);
+    sf::Vector2f relativePosition =
+        positionA - positionB;
 
-    if (overlapX <= 0.f || overlapY <= 0.f)
-        return;
+    sf::Vector2f relativeVelocity =
+        velocityA - velocityB;
 
-    // Нормаль направлена от A к B
-    sf::Vector2f normal;
+    sf::Vector2f halfSize =
+        (sizeA + sizeB) / 2.f;
 
-    if (overlapX < overlapY)
+    float entryX;
+    float exitX;
+    float entryY;
+    float exitY;
+
+    // Проверка пересечения по X.
+    if (std::abs(relativeVelocity.x) < EPSILON)
     {
-        normal = {
-            posA.x < posB.x ? 1.f : -1.f,
-            0.f
-        };
+        if (std::abs(relativePosition.x) > halfSize.x + EPSILON)
+            return result;
+
+        entryX = -std::numeric_limits<float>::infinity();
+        exitX = std::numeric_limits<float>::infinity();
     }
     else
     {
-        normal = {
-            0.f,
-            posA.y < posB.y ? 1.f : -1.f
-        };
+        float x1 =
+            (-halfSize.x - relativePosition.x) /
+            relativeVelocity.x;
+
+        float x2 =
+            (halfSize.x - relativePosition.x) /
+            relativeVelocity.x;
+
+        entryX = std::min(x1, x2);
+        exitX = std::max(x1, x2);
     }
 
-    float invMassA = 1.f / a.getMass();
-    float invMassB = 1.f / b.getMass();
-
-    float totalInvMass = invMassA + invMassB;
-
-    if (totalInvMass <= 0.f)
-        return;
-
-    // Коррекция проникновения
-    float penetration =
-        overlapX < overlapY ? overlapX : overlapY;
-
-    const float slop = 0.01f;
-    const float percent = 0.8f;
-
-    float correction =
-        std::max(penetration - slop, 0.f) *
-        percent / totalInvMass;
-
-    posA -= normal * correction * invMassA;
-    posB += normal * correction * invMassB;
-
-    // Расчёт импульса
-    sf::Vector2f relativeVelocity = velB - velA;
-
-    float velocityAlongNormal =
-        relativeVelocity.x * normal.x +
-        relativeVelocity.y * normal.y;
-
-    if (velocityAlongNormal < 0.f)
+    // Проверка пересечения по Y.
+    if (std::abs(relativeVelocity.y) < EPSILON)
     {
-        float e = restitution;
+        if (std::abs(relativePosition.y) > halfSize.y + EPSILON)
+            return result;
 
-        // Убираем отскок при медленном контакте
-        if (std::abs(velocityAlongNormal) < 20.f)
-            e = 0.f;
+        entryY = -std::numeric_limits<float>::infinity();
+        exitY = std::numeric_limits<float>::infinity();
+    }
+    else
+    {
+        float y1 =
+            (-halfSize.y - relativePosition.y) /
+            relativeVelocity.y;
 
-        float impulseMagnitude =
-            -(1.f + e) * velocityAlongNormal /
-            totalInvMass;
+        float y2 =
+            (halfSize.y - relativePosition.y) /
+            relativeVelocity.y;
 
-        sf::Vector2f impulse =
-            normal * impulseMagnitude;
-
-        velA -= impulse * invMassA;
-        velB += impulse * invMassB;
+        entryY = std::min(y1, y2);
+        exitY = std::max(y1, y2);
     }
 
-    a.setPosition(posA);
-    b.setPosition(posB);
+    float entryTime = std::max(entryX, entryY);
+    float exitTime = std::min(exitX, exitY);
 
-    a.setVelocity(velA);
-    b.setVelocity(velB);
+    if (entryTime > exitTime ||
+        exitTime < -EPSILON ||
+        entryTime < -EPSILON ||
+        entryTime > dt + EPSILON)
+        return result;
+
+    // Определяем ось первого контакта.
+    if (entryX > entryY)
+    {
+        result.normal =
+            relativeVelocity.x > 0.f
+            ? sf::Vector2f(1.f, 0.f)
+            : sf::Vector2f(-1.f, 0.f);
+    }
+    else
+    {
+        result.normal =
+            relativeVelocity.y > 0.f
+            ? sf::Vector2f(0.f, 1.f)
+            : sf::Vector2f(0.f, -1.f);
+    }
+
+    sf::Vector2f relativeContactVelocity =
+        velocityB - velocityA;
+
+    // Не обрабатываем тела, которые уже расходятся.
+    if (dot(relativeContactVelocity, result.normal) >= 0.f)
+        return BoxSweepResult();
+
+    result.hit = true;
+    result.time = std::clamp(entryTime, 0.f, dt);
+
+    return result;
 }
 
-void updateBoxWithWallCCD(
+// =====================================================
+// CCD: BOX - WALL
+// =====================================================
+
+
+BoxWallSweepResult checkBoxWallCCD(
+    const Box& box,
+    const Wall& wall,
+    float dt
+)
+{
+    BoxWallSweepResult result;
+
+    if (!std::isfinite(dt) || dt <= 0.f)
+        return result;
+
+    if (box.getGroup() == PhysicsGroup::Static)
+        return result;
+
+    sf::Vector2f position = box.getPosition();
+    sf::Vector2f velocity = box.getVelocity();
+    sf::Vector2f size = box.getSize();
+
+    sf::Vector2f wallPosition = wall.getPosition();
+    sf::Vector2f wallSize = wall.getSize();
+
+    if (!isValidVector(position) ||
+        !isValidVector(velocity) ||
+        !isValidVector(size) ||
+        !isValidVector(wallPosition) ||
+        !isValidVector(wallSize) ||
+        size.x <= 0.f || size.y <= 0.f ||
+        wallSize.x <= 0.f || wallSize.y <= 0.f)
+        return result;
+
+    if (checkBoxWallCollision(box, wall).isColliding)
+        return result;
+
+    sf::Vector2f halfSize = size / 2.f;
+
+    // Расширяем стену на половину размера Box.
+    float left = wallPosition.x - halfSize.x;
+    float right = wallPosition.x + wallSize.x + halfSize.x;
+    float top = wallPosition.y - halfSize.y;
+    float bottom = wallPosition.y + wallSize.y + halfSize.y;
+
+    float entryX;
+    float exitX;
+    float entryY;
+    float exitY;
+
+    if (std::abs(velocity.x) < EPSILON)
+    {
+        if (position.x < left - EPSILON ||
+            position.x > right + EPSILON)
+            return result;
+
+        entryX = -std::numeric_limits<float>::infinity();
+        exitX = std::numeric_limits<float>::infinity();
+    }
+    else
+    {
+        float x1 = (left - position.x) / velocity.x;
+        float x2 = (right - position.x) / velocity.x;
+
+        entryX = std::min(x1, x2);
+        exitX = std::max(x1, x2);
+    }
+
+    if (std::abs(velocity.y) < EPSILON)
+    {
+        if (position.y < top - EPSILON ||
+            position.y > bottom + EPSILON)
+            return result;
+
+        entryY = -std::numeric_limits<float>::infinity();
+        exitY = std::numeric_limits<float>::infinity();
+    }
+    else
+    {
+        float y1 = (top - position.y) / velocity.y;
+        float y2 = (bottom - position.y) / velocity.y;
+
+        entryY = std::min(y1, y2);
+        exitY = std::max(y1, y2);
+    }
+
+    float entryTime = std::max(entryX, entryY);
+    float exitTime = std::min(exitX, exitY);
+
+    if (entryTime > exitTime ||
+        exitTime < -EPSILON ||
+        entryTime < -EPSILON ||
+        entryTime > dt + EPSILON)
+        return result;
+
+    if (entryX > entryY)
+    {
+        result.normal =
+            velocity.x > 0.f
+            ? sf::Vector2f(-1.f, 0.f)
+            : sf::Vector2f(1.f, 0.f);
+    }
+    else
+    {
+        result.normal =
+            velocity.y > 0.f
+            ? sf::Vector2f(0.f, -1.f)
+            : sf::Vector2f(0.f, 1.f);
+    }
+
+    if (dot(velocity, result.normal) >= 0.f)
+        return BoxWallSweepResult();
+
+    result.hit = true;
+    result.time = std::clamp(entryTime, 0.f, dt);
+
+    return result;
+}
+
+
+// =====================================================
+// CCD: BOX - WALL IMPACT
+// =====================================================
+
+void resolveBoxWallImpact(
     Box& box,
-    const std::vector<Wall>& walls,
-    float dt,
+    sf::Vector2f normal,
     float restitution
 )
 {
-    float remainingTime = dt;
-    const int maxCollisions = 8;
+    normal = normalize(normal);
 
-    // Сначала исправляем уже существующие пересечения
-    for (const Wall& wall : walls)
+    if (lengthSquared(normal) <= EPSILON)
+        return;
+
+    applyBoxWallImpulse(
+        box,
+        normal,
+        restitution
+    );
+}
+
+// =====================================================
+// ITERATIVE BOX SOLVER
+// =====================================================
+
+
+void solveBoxCollisions(
+    std::vector<Box>& boxes,
+    const std::vector<Wall>& walls,
+    float restitution,
+    int iterations
+)
+{
+    if (iterations <= 0)
+        return;
+
+    restitution = safeRestitution(restitution);
+
+    constexpr float FRICTION = 0.5f;
+    constexpr float SOLVER_SLOP = 0.01f;
+    constexpr float POSITION_FACTOR = 0.2f;
+
+    // Контакт Box-Wall.
+    struct WallContact
     {
-        resolveBoxWallCollision(box, wall, restitution);
+        std::size_t boxIndex;
+        std::size_t wallIndex;
+
+        sf::Vector2f normal;
+
+        float accumulatedNormal = 0.f;
+        float accumulatedTangent = 0.f;
+        float restitutionBias = 0.f;
+    };
+
+    // Контакт Box-Box.
+    struct BoxContact
+    {
+        std::size_t indexA;
+        std::size_t indexB;
+
+        sf::Vector2f normal;
+
+        float accumulatedNormal = 0.f;
+        float accumulatedTangent = 0.f;
+        float restitutionBias = 0.f;
+    };
+
+    std::vector<WallContact> wallContacts;
+    std::vector<BoxContact> boxContacts;
+
+    // -----------------------------------------
+    // СОЗДАНИЕ СПИСКА КОНТАКТОВ
+    // -----------------------------------------
+
+    for (std::size_t i = 0; i < boxes.size(); ++i)
+    {
+        Box& box = boxes[i];
+
+        if (inverseMass(box) <= EPSILON)
+            continue;
+
+        for (std::size_t j = 0; j < walls.size(); ++j)
+        {
+            Collision collision =
+                checkBoxWallCollision(box, walls[j]);
+
+            if (!collision.isColliding)
+                continue;
+
+            float velocityAlongNormal =
+                dot(box.getVelocity(), collision.normal);
+
+            float e = restitution;
+
+            if (std::abs(velocityAlongNormal) <
+                RESTITUTION_THRESHOLD)
+            {
+                e = 0.f;
+            }
+
+            float restitutionBias = 0.f;
+
+            if (velocityAlongNormal < 0.f)
+            {
+                restitutionBias =
+                    -e * velocityAlongNormal;
+            }
+
+            wallContacts.push_back({
+                i,
+                j,
+                collision.normal,
+                0.f,
+                0.f,
+                restitutionBias
+                });
+        }
     }
+
+    for (std::size_t i = 0; i < boxes.size(); ++i)
+    {
+        for (std::size_t j = i + 1; j < boxes.size(); ++j)
+        {
+            Box& a = boxes[i];
+            Box& b = boxes[j];
+
+            float invA = inverseMass(a);
+            float invB = inverseMass(b);
+
+            if (invA + invB <= EPSILON)
+                continue;
+
+            Collision collision =
+                checkBoxBoxCollision(a, b);
+
+            if (!collision.isColliding)
+                continue;
+
+            sf::Vector2f relativeVelocity =
+                b.getVelocity() - a.getVelocity();
+
+            float velocityAlongNormal =
+                dot(relativeVelocity, collision.normal);
+
+            float e = restitution;
+
+            if (std::abs(velocityAlongNormal) <
+                RESTITUTION_THRESHOLD)
+            {
+                e = 0.f;
+            }
+
+            float restitutionBias = 0.f;
+
+            if (velocityAlongNormal < 0.f)
+            {
+                restitutionBias =
+                    -e * velocityAlongNormal;
+            }
+
+            boxContacts.push_back({
+                i,
+                j,
+                collision.normal,
+                0.f,
+                0.f,
+                restitutionBias
+                });
+        }
+    }
+
+    // -----------------------------------------
+    // ПОСЛЕДОВАТЕЛЬНЫЕ ИМПУЛЬСЫ
+    // -----------------------------------------
 
     for (int iteration = 0;
-        iteration < maxCollisions && remainingTime > 0.000001f;
-        iteration++)
+        iteration < iterations;
+        ++iteration)
     {
-        sf::Vector2f pos = box.getPosition();
-        sf::Vector2f size = box.getSize();
-        sf::Vector2f velocity = box.getVelocity();
-
-        float halfX = size.x / 2.f;
-        float halfY = size.y / 2.f;
-
-        float earliestTime = remainingTime;
-        sf::Vector2f hitNormal(0.f, 0.f);
-        bool foundCollision = false;
-
-        for (const Wall& wall : walls)
+        // Box-Wall.
+        for (WallContact& contact : wallContacts)
         {
-            sf::Vector2f wallPos = wall.getPosition();
-            sf::Vector2f wallSize = wall.getSize();
+            Box& box = boxes[contact.boxIndex];
 
-            // Расширяем стену на половину размера коробки.
-            // После этого проверяем движение центра коробки.
-            float minX = wallPos.x - halfX;
-            float maxX = wallPos.x + wallSize.x + halfX;
+            float invMass = inverseMass(box);
 
-            float minY = wallPos.y - halfY;
-            float maxY = wallPos.y + wallSize.y + halfY;
-
-            float txEntry, txExit;
-            float tyEntry, tyExit;
-
-            const float infinity =
-                std::numeric_limits<float>::infinity();
-
-            if (std::abs(velocity.x) < 0.000001f)
-            {
-                if (pos.x < minX || pos.x > maxX)
-                    continue;
-
-                txEntry = -infinity;
-                txExit = infinity;
-            }
-            else
-            {
-                float t1 = (minX - pos.x) / velocity.x;
-                float t2 = (maxX - pos.x) / velocity.x;
-
-                txEntry = std::min(t1, t2);
-                txExit = std::max(t1, t2);
-            }
-
-            if (std::abs(velocity.y) < 0.000001f)
-            {
-                if (pos.y < minY || pos.y > maxY)
-                    continue;
-
-                tyEntry = -infinity;
-                tyExit = infinity;
-            }
-            else
-            {
-                float t1 = (minY - pos.y) / velocity.y;
-                float t2 = (maxY - pos.y) / velocity.y;
-
-                tyEntry = std::min(t1, t2);
-                tyExit = std::max(t1, t2);
-            }
-
-            float entryTime = std::max(txEntry, tyEntry);
-            float exitTime = std::min(txExit, tyExit);
-
-            if (entryTime > exitTime ||
-                exitTime < 0.f ||
-                entryTime < 0.f ||
-                entryTime > remainingTime)
-            {
+            if (invMass <= EPSILON)
                 continue;
-            }
 
-            if (entryTime < earliestTime || !foundCollision)
+            sf::Vector2f normal =
+                contact.normal;
+
+            sf::Vector2f tangent(
+                -normal.y,
+                normal.x
+            );
+
+            sf::Vector2f velocity =
+                box.getVelocity();
+
+            float normalVelocity =
+                dot(velocity, normal);
+
+            float lambda =
+                (contact.restitutionBias -
+                    normalVelocity) / invMass;
+
+            float oldNormalImpulse =
+                contact.accumulatedNormal;
+
+            contact.accumulatedNormal =
+                std::max(
+                    0.f,
+                    oldNormalImpulse + lambda
+                );
+
+            float appliedNormalImpulse =
+                contact.accumulatedNormal -
+                oldNormalImpulse;
+
+            velocity +=
+                normal * (appliedNormalImpulse * invMass);
+
+            box.setVelocity(velocity);
+
+            // Касательный импульс — трение.
+            velocity = box.getVelocity();
+
+            float tangentVelocity =
+                dot(velocity, tangent);
+
+            float tangentLambda =
+                -tangentVelocity / invMass;
+
+            float oldTangentImpulse =
+                contact.accumulatedTangent;
+
+            float maximumFriction =
+                FRICTION * contact.accumulatedNormal;
+
+            contact.accumulatedTangent =
+                std::clamp(
+                    oldTangentImpulse + tangentLambda,
+                    -maximumFriction,
+                    maximumFriction
+                );
+
+            float appliedTangentImpulse =
+                contact.accumulatedTangent -
+                oldTangentImpulse;
+
+            velocity +=
+                tangent * (appliedTangentImpulse * invMass);
+
+            box.setVelocity(velocity);
+        }
+
+        // Box-Box.
+        for (BoxContact& contact : boxContacts)
+        {
+            Box& a = boxes[contact.indexA];
+            Box& b = boxes[contact.indexB];
+
+            float invA = inverseMass(a);
+            float invB = inverseMass(b);
+
+            float totalInverseMass = invA + invB;
+
+            if (totalInverseMass <= EPSILON)
+                continue;
+
+            sf::Vector2f normal =
+                contact.normal;
+
+            sf::Vector2f tangent(
+                -normal.y,
+                normal.x
+            );
+
+            sf::Vector2f relativeVelocity =
+                b.getVelocity() - a.getVelocity();
+
+            float normalVelocity =
+                dot(relativeVelocity, normal);
+
+            float lambda =
+                (contact.restitutionBias -
+                    normalVelocity) / totalInverseMass;
+
+            float oldNormalImpulse =
+                contact.accumulatedNormal;
+
+            contact.accumulatedNormal =
+                std::max(
+                    0.f,
+                    oldNormalImpulse + lambda
+                );
+
+            float appliedNormalImpulse =
+                contact.accumulatedNormal -
+                oldNormalImpulse;
+
+            sf::Vector2f normalImpulse =
+                normal * appliedNormalImpulse;
+
+            if (invA > 0.f)
             {
-                earliestTime = entryTime;
-                foundCollision = true;
+                a.setVelocity(
+                    a.getVelocity() -
+                    normalImpulse * invA
+                );
+            }
 
-                if (txEntry > tyEntry)
-                {
-                    hitNormal = sf::Vector2f(
-                        velocity.x > 0.f ? -1.f : 1.f,
-                        0.f
-                    );
-                }
-                else
-                {
-                    hitNormal = sf::Vector2f(
-                        0.f,
-                        velocity.y > 0.f ? -1.f : 1.f
-                    );
-                }
+            if (invB > 0.f)
+            {
+                b.setVelocity(
+                    b.getVelocity() +
+                    normalImpulse * invB
+                );
+            }
+
+            // Касательный импульс — трение.
+            relativeVelocity =
+                b.getVelocity() - a.getVelocity();
+
+            float tangentVelocity =
+                dot(relativeVelocity, tangent);
+
+            float tangentLambda =
+                -tangentVelocity / totalInverseMass;
+
+            float oldTangentImpulse =
+                contact.accumulatedTangent;
+
+            float maximumFriction =
+                FRICTION * contact.accumulatedNormal;
+
+            contact.accumulatedTangent =
+                std::clamp(
+                    oldTangentImpulse + tangentLambda,
+                    -maximumFriction,
+                    maximumFriction
+                );
+
+            float appliedTangentImpulse =
+                contact.accumulatedTangent -
+                oldTangentImpulse;
+
+            sf::Vector2f tangentImpulse =
+                tangent * appliedTangentImpulse;
+
+            if (invA > 0.f)
+            {
+                a.setVelocity(
+                    a.getVelocity() -
+                    tangentImpulse * invA
+                );
+            }
+
+            if (invB > 0.f)
+            {
+                b.setVelocity(
+                    b.getVelocity() +
+                    tangentImpulse * invB
+                );
             }
         }
-
-        // Столкновений больше нет — перемещаем коробку до конца шага
-        if (!foundCollision)
-        {
-            box.update(remainingTime);
-            remainingTime = 0.f;
-            break;
-        }
-
-        // Перемещаем коробку точно до момента столкновения
-        box.update(earliestTime);
-        remainingTime -= earliestTime;
-
-        velocity = box.getVelocity();
-
-        // Отражаем только компоненту скорости по нормали
-        float velocityAlongNormal =
-            velocity.x * hitNormal.x +
-            velocity.y * hitNormal.y;
-
-        if (velocityAlongNormal < -0.5f)
-        {
-            velocity.x -=
-                (1.f + restitution) *
-                velocityAlongNormal * hitNormal.x;
-
-            velocity.y -=
-                (1.f + restitution) *
-                velocityAlongNormal * hitNormal.y;
-        }
-        else
-        {
-            // Убираем очень маленькую скорость вдоль нормали.
-            velocity.x -= velocityAlongNormal * hitNormal.x;
-            velocity.y -= velocityAlongNormal * hitNormal.y;
-        }
-
-        box.setVelocity(velocity);
-
-        // Небольшое смещение от поверхности для защиты
-        // от повторного обнаружения того же контакта
-        sf::Vector2f newPos = box.getPosition();
-
-        newPos.x += hitNormal.x * 0.001f;
-        newPos.y += hitNormal.y * 0.001f;
-
-        box.setPosition(newPos);
     }
 
-    // Если достигли лимита столкновений, обрабатываем остаток времени
-    if (remainingTime > 0.f)
+    // -----------------------------------------
+    // ОТДЕЛЬНАЯ КОРРЕКЦИЯ ПОЗИЦИЙ
+    // -----------------------------------------
+
+    // Несколько мягких проходов уменьшают
+    // проникновение, не добавляя скорость телам.
+
+    for (int iteration = 0;
+        iteration < iterations;
+        ++iteration)
     {
-        box.update(remainingTime);
+        // Box-Wall.
+        for (Box& box : boxes)
+        {
+            float invMass = inverseMass(box);
+
+            if (invMass <= EPSILON)
+                continue;
+
+            for (const Wall& wall : walls)
+            {
+                Collision collision =
+                    checkBoxWallCollision(box, wall);
+
+                if (!collision.isColliding)
+                    continue;
+
+                float correction =
+                    std::max(
+                        collision.penetration - SOLVER_SLOP,
+                        0.f
+                    ) * POSITION_FACTOR;
+
+                box.setPosition(
+                    box.getPosition() +
+                    collision.normal * correction
+                );
+            }
+        }
+
+        // Box-Box.
+        for (std::size_t i = 0; i < boxes.size(); ++i)
+        {
+            for (std::size_t j = i + 1;
+                j < boxes.size();
+                ++j)
+            {
+                Box& a = boxes[i];
+                Box& b = boxes[j];
+
+                float invA = inverseMass(a);
+                float invB = inverseMass(b);
+
+                float totalInverseMass = invA + invB;
+
+                if (totalInverseMass <= EPSILON)
+                    continue;
+
+                Collision collision =
+                    checkBoxBoxCollision(a, b);
+
+                if (!collision.isColliding)
+                    continue;
+
+                float correction =
+                    std::max(
+                        collision.penetration - SOLVER_SLOP,
+                        0.f
+                    ) * POSITION_FACTOR;
+
+                correction /= totalInverseMass;
+
+                sf::Vector2f correctionVector =
+                    collision.normal * correction;
+
+                if (invA > 0.f)
+                {
+                    a.setPosition(
+                        a.getPosition() -
+                        correctionVector * invA
+                    );
+                }
+
+                if (invB > 0.f)
+                {
+                    b.setPosition(
+                        b.getPosition() +
+                        correctionVector * invB
+                    );
+                }
+            }
+        }
     }
 }

@@ -1,606 +1,1270 @@
 
 #include "CCD.h"
 #include "Collision.h"
-#include <cmath>
+
 #include <algorithm>
-#include <iostream>
+#include <cmath>
+#include <limits>
 
-
-bool CCD::checkBallWallCCD(
-    const Ball& ball,
-    const Wall& wall,
-    float dt,
-    float& collisionTime
-)
+namespace
 {
-    sf::Vector2f position = ball.getPosition();
-    sf::Vector2f velocity = ball.getVelocity();
+    constexpr float EPSILON = 0.0001f;
+    constexpr int MAX_CCD_EVENTS = 32;
+    constexpr int SOLVER_ITERATIONS = 8;
+    constexpr int FALLBACK_SUBSTEPS = 16;
 
-    float radius = ball.getRadius();
-
-    float left = wall.getPosition().x;
-    float right = left + wall.getSize().x;
-
-    float top = wall.getPosition().y;
-    float bottom = top + wall.getSize().y;
-
-    float earliestTime = dt + 1.f;
-    bool hit = false;
-
-    // Проверка левой и правой граней
-    if (velocity.x > 0.f)
+    float dot(sf::Vector2f a, sf::Vector2f b)
     {
-        float time = (left - radius - position.x) / velocity.x;
+        return a.x * b.x + a.y * b.y;
+    }
 
-        if (time >= 0.f && time <= dt)
+    float ballInverseMass(const Ball& ball)
+    {
+        if (ball.getGroup() == PhysicsGroup::Static)
+            return 0.f;
+
+        float mass = ball.getMass();
+
+        if (!std::isfinite(mass) || mass <= EPSILON)
+            return 0.f;
+
+        return 1.f / mass;
+    }
+
+    void advanceBall(Ball& ball, float dt)
+    {
+        if (ball.getGroup() != PhysicsGroup::Static)
+            ball.update(dt);
+    }
+
+    void advanceBoxes(
+        std::vector<Box>& boxes,
+        float dt,
+        PhysicsGroup group
+    )
+    {
+        for (Box& box : boxes)
         {
-            float y = position.y + velocity.y * time;
-
-            if (y >= top - radius && y <= bottom + radius)
-            {
-                earliestTime = time;
-                hit = true;
-            }
+            if (box.getGroup() == group)
+                box.update(dt);
         }
     }
 
-    if (velocity.x < 0.f)
+    bool isRelevantBoxPair(
+        const Box& first,
+        const Box& second,
+        PhysicsGroup group
+    )
     {
-        float time = (right + radius - position.x) / velocity.x;
+        bool firstSelected = first.getGroup() == group;
+        bool secondSelected = second.getGroup() == group;
 
-        if (time >= 0.f && time <= dt && time < earliestTime)
-        {
-            float y = position.y + velocity.y * time;
+        bool firstStatic =
+            first.getGroup() == PhysicsGroup::Static;
 
-            if (y >= top - radius && y <= bottom + radius)
-            {
-                earliestTime = time;
-                hit = true;
-            }
-        }
+        bool secondStatic =
+            second.getGroup() == PhysicsGroup::Static;
+
+        return
+            (firstSelected && secondSelected) ||
+            (firstSelected && secondStatic) ||
+            (secondSelected && firstStatic);
     }
 
-    // Проверка верхней и нижней граней
-    if (velocity.y > 0.f)
+    void solveSelectedBoxCollisions(
+        std::vector<Box>& boxes,
+        const std::vector<Wall>& walls,
+        PhysicsGroup group,
+        float restitution,
+        int iterations
+    )
     {
-        float time = (top - radius - position.y) / velocity.y;
-
-        if (time >= 0.f && time <= dt && time < earliestTime)
-        {
-            float x = position.x + velocity.x * time;
-
-            if (x >= left - radius && x <= right + radius)
-            {
-                earliestTime = time;
-                hit = true;
-            }
-        }
-    }
-
-    if (velocity.y < 0.f)
-    {
-        float time = (bottom + radius - position.y) / velocity.y;
-
-        if (time >= 0.f && time <= dt && time < earliestTime)
-        {
-            float x = position.x + velocity.x * time;
-
-            if (x >= left - radius && x <= right + radius)
-            {
-                earliestTime = time;
-                hit = true;
-            }
-        }
-    }
-
-    if (hit)
-    {
-        collisionTime = earliestTime;
-        return true;
-    }
-
-    return false;
-}
-
-
-
-void CCD::updateBallWithCCD(
-    Ball& ball,
-    const std::vector<Wall>& walls,
-    float dt,
-    float restitution
-)
-{
-    float remainingTime = dt;
-
-    const int maxCollisions = 8;
-
-    for (int iteration = 0; iteration < maxCollisions; iteration++)
-    {
-        if (remainingTime <= 0.000001f)
+        if (group == PhysicsGroup::Static)
             return;
 
-        float earliestTime = remainingTime;
-        int hitWallIndex = -1;
-
-        for (size_t i = 0; i < walls.size(); i++)
+        for (int iteration = 0; iteration < iterations; ++iteration)
         {
-            float collisionTime = 0.f;
-
-            bool hit = checkBallWallCCD(
-                ball,
-                walls[i],
-                remainingTime,
-                collisionTime
-            );
-
-            if (hit && (hitWallIndex == -1 || collisionTime < earliestTime))
+            // Box - Wall
+            for (Box& box : boxes)
             {
-                earliestTime = collisionTime;
-                hitWallIndex = static_cast<int>(i);
+                if (box.getGroup() != group)
+                    continue;
+
+                for (const Wall& wall : walls)
+                {
+                    resolveBoxWallCollision(
+                        box,
+                        wall,
+                        restitution
+                    );
+                }
+            }
+
+            // Box - Box
+            for (std::size_t i = 0; i < boxes.size(); ++i)
+            {
+                for (std::size_t j = i + 1; j < boxes.size(); ++j)
+                {
+                    if (!isRelevantBoxPair(
+                        boxes[i],
+                        boxes[j],
+                        group))
+                    {
+                        continue;
+                    }
+
+                    resolveBoxBoxCollision(
+                        boxes[i],
+                        boxes[j],
+                        restitution
+                    );
+                }
+            }
+        }
+    }
+
+    bool isRelevantBallPair(
+        const Ball& first,
+        const Ball& second,
+        PhysicsGroup group
+    )
+    {
+        bool firstSelected = first.getGroup() == group;
+        bool secondSelected = second.getGroup() == group;
+
+        bool firstStatic =
+            first.getGroup() == PhysicsGroup::Static;
+
+        bool secondStatic =
+            second.getGroup() == PhysicsGroup::Static;
+
+        return
+            (firstSelected && secondSelected) ||
+            (firstSelected && secondStatic) ||
+            (secondSelected && firstStatic);
+    }
+
+    void solveSelectedBallCollisions(
+        std::vector<Ball>& balls,
+        const std::vector<Wall>& walls,
+        PhysicsGroup group,
+        float restitution
+    )
+    {
+        if (group == PhysicsGroup::Static)
+            return;
+
+        for (Ball& ball : balls)
+        {
+            if (ball.getGroup() != group)
+                continue;
+
+            for (const Wall& wall : walls)
+            {
+                resolveBallWallCollision(
+                    ball,
+                    wall,
+                    restitution
+                );
             }
         }
 
-        if (hitWallIndex == -1)
+        for (std::size_t i = 0; i < balls.size(); ++i)
         {
-            ball.update(remainingTime);
-            return;
-        }
-        ball.update(earliestTime);
+            for (std::size_t j = i + 1; j < balls.size(); ++j)
+            {
+                if (!isRelevantBallPair(
+                    balls[i],
+                    balls[j],
+                    group))
+                {
+                    continue;
+                }
 
-        sf::Vector2f velocity = ball.getVelocity();
+                // Передаём динамический шар первым,
+                // чтобы направление нормали было согласованным.
+                if (balls[i].getGroup() == group)
+                {
+                    resolveCollision(
+                        balls[i],
+                        balls[j],
+                        restitution
+                    );
+                }
+                else
+                {
+                    resolveCollision(
+                        balls[j],
+                        balls[i],
+                        restitution
+                    );
+                }
+            }
+        }
+    }
+
+    BallSweepResult checkBallWallCCD(
+        const Ball& ball,
+        const Wall& wall,
+        float dt
+    )
+    {
+        BallSweepResult result;
+
+        if (dt <= 0.f ||
+            ball.getGroup() == PhysicsGroup::Static)
+        {
+            return result;
+        }
 
         sf::Vector2f position = ball.getPosition();
-        const Wall& wall = walls[hitWallIndex];
+        sf::Vector2f velocity = ball.getVelocity();
 
-        float left = wall.getPosition().x;
-        float right = left + wall.getSize().x;
+        float radius = ball.getRadius();
 
-        float top = wall.getPosition().y;
-        float bottom = top + wall.getSize().y;
+        if (!std::isfinite(radius) || radius <= 0.f)
+            return result;
 
-        float distanceLeft = std::abs(position.x + ball.getRadius() - left);
-        float distanceRight = std::abs(position.x - ball.getRadius() - right);
+        sf::Vector2f wallPosition = wall.getPosition();
+        sf::Vector2f wallSize = wall.getSize();
 
-        float distanceTop = std::abs(position.y + ball.getRadius() - top);
-        float distanceBottom = std::abs(position.y - ball.getRadius() - bottom);
+        float left = wallPosition.x - radius;
+        float right = wallPosition.x + wallSize.x + radius;
+        float top = wallPosition.y - radius;
+        float bottom = wallPosition.y + wallSize.y + radius;
 
-        float minimumDistance = std::min(
-            std::min(distanceLeft, distanceRight),
-            std::min(distanceTop, distanceBottom)
-        );
+        float entryX;
+        float exitX;
+        float entryY;
+        float exitY;
 
-        if (minimumDistance == distanceLeft || minimumDistance == distanceRight)
+        if (std::abs(velocity.x) < EPSILON)
         {
-            velocity.x = -velocity.x * restitution;
+            if (position.x < left || position.x > right)
+                return result;
+
+            entryX = -std::numeric_limits<float>::infinity();
+            exitX = std::numeric_limits<float>::infinity();
         }
         else
         {
-            velocity.y = -velocity.y * restitution;
+            float x1 = (left - position.x) / velocity.x;
+            float x2 = (right - position.x) / velocity.x;
+
+            entryX = std::min(x1, x2);
+            exitX = std::max(x1, x2);
         }
 
-        ball.setVelocity(velocity);
+        if (std::abs(velocity.y) < EPSILON)
+        {
+            if (position.y < top || position.y > bottom)
+                return result;
 
-        ball.setVelocity(velocity);
-        remainingTime -= earliestTime;
+            entryY = -std::numeric_limits<float>::infinity();
+            exitY = std::numeric_limits<float>::infinity();
+        }
+        else
+        {
+            float y1 = (top - position.y) / velocity.y;
+            float y2 = (bottom - position.y) / velocity.y;
+
+            entryY = std::min(y1, y2);
+            exitY = std::max(y1, y2);
+        }
+
+        float entryTime = std::max(entryX, entryY);
+        float exitTime = std::min(exitX, exitY);
+
+        if (entryTime > exitTime ||
+            exitTime < 0.f ||
+            entryTime < 0.f ||
+            entryTime > dt)
+        {
+            return result;
+        }
+
+        result.hit = true;
+        result.time = entryTime;
+
+        if (entryX > entryY)
+        {
+            result.normal = velocity.x > 0.f
+                ? sf::Vector2f(-1.f, 0.f)
+                : sf::Vector2f(1.f, 0.f);
+        }
+        else
+        {
+            result.normal = velocity.y > 0.f
+                ? sf::Vector2f(0.f, -1.f)
+                : sf::Vector2f(0.f, 1.f);
+        }
+
+        return result;
     }
 
-    if (remainingTime > 0.f)
-        ball.update(remainingTime);
-}
-
-bool CCD::checkBallBallCCD(
-    const Ball& a,
-    const Ball& b,
-    float dt,
-    float& collisionTime
-)
-{
-    sf::Vector2f p = b.getPosition() - a.getPosition();
-    sf::Vector2f v = b.getVelocity() - a.getVelocity();
-
-    float radiusSum = a.getRadius() + b.getRadius();
-
-    float A = v.x * v.x + v.y * v.y;
-    float B = 2.f * (p.x * v.x + p.y * v.y);
-    float C = p.x * p.x + p.y * p.y - radiusSum * radiusSum;
-
-    // Шарики уже пересекаются
-    if (C <= 0.f)
+    void resolveBallWallImpact(
+        Ball& ball,
+        sf::Vector2f normal,
+        float restitution
+    )
     {
-        float approach = p.x * v.x + p.y * v.y;
-
-        // Если шарики расходятся или стоят,
-        // повторное столкновение не требуется
-        if (approach >= 0.f)
-            return false;
-
-        collisionTime = 0.f;
-        return true;
-    }
-
-    // Нет относительного движения
-    if (A < 0.000001f)
-        return false;
-
-    float discriminant = B * B - 4.f * A * C;
-
-    // Действительных корней нет
-    if (discriminant < 0.f)
-        return false;
-
-    float time = (-B - std::sqrt(discriminant)) / (2.f * A);
-
-    if (time < 0.f || time > dt)
-        return false;
-
-    // Проверяем, что шарики сближаются
-    float approach = p.x * v.x + p.y * v.y;
-
-    if (approach >= 0.f)
-        return false;
-
-    collisionTime = time;
-    return true;
-}
-
-void CCD::updateBallPairWithCCD(
-    Ball& a,
-    Ball& b,
-    float dt,
-    float restitution
-)
-{
-    float collisionTime = 0.f;
-
-    bool hit = checkBallBallCCD(
-        a, b, dt, collisionTime
-    );
-
-    if (!hit)
-    {
-        a.update(dt);
-        b.update(dt);
-        return;
-    }
-
-    // Двигаем оба шарика до контакта
-    a.update(collisionTime);
-    b.update(collisionTime);
-
-    // Рассчитываем нормаль столкновения
-    sf::Vector2f difference = b.getPosition() - a.getPosition();
-
-    float distance = std::sqrt(
-        difference.x * difference.x +
-        difference.y * difference.y
-    );
-
-    if (distance < 0.0001f)
-        return;
-
-    sf::Vector2f normal = difference / distance;
-
-    sf::Vector2f relativeVelocity =
-        b.getVelocity() - a.getVelocity();
-
-    float velocityAlongNormal =
-        relativeVelocity.x * normal.x +
-        relativeVelocity.y * normal.y;
-
-    if (velocityAlongNormal < 0.f)
-    {
-        float inverseMassA = 1.f / a.getMass();
-        float inverseMassB = 1.f / b.getMass();
-
-        float impulseMagnitude =
-            -(1.f + restitution) * velocityAlongNormal /
-            (inverseMassA + inverseMassB);
-
-        sf::Vector2f impulse = normal * impulseMagnitude;
-
-        a.setVelocity(
-            a.getVelocity() - impulse * inverseMassA
-        );
-
-        b.setVelocity(
-            b.getVelocity() + impulse * inverseMassB
-        );
-    }
-
-    // Двигаем шарики в течение оставшегося времени
-    float remainingTime = dt - collisionTime;
-
-    a.update(remainingTime);
-    b.update(remainingTime);
-}
-
-
-void CCD::updateBallsWithCCD(
-    std::vector<Ball>& balls,
-    const std::vector<Wall>& walls,
-    float dt,
-    float restitution
-)
-{
-    float remainingTime = dt;
-    const int maxCollisions = 16;
-
-    solveInitialOverlaps(balls, walls);
-    
-    for (int iteration = 0; iteration < maxCollisions; iteration++)
-    {
-        if (remainingTime <= 0.000001f)
+        if (ball.getGroup() == PhysicsGroup::Static)
             return;
 
-        float earliestTime = remainingTime;
-        int hitBallA = -1;
-        int hitBallB = -1;
-        int hitWall = -1;
+        float velocityAlongNormal =
+            dot(ball.getVelocity(), normal);
 
-        // Ищем столкновения шариков со стенами
-        for (size_t i = 0; i < balls.size(); i++)
-        {
-            for (size_t w = 0; w < walls.size(); w++)
-            {
-                float time = 0.f;
+        if (velocityAlongNormal >= 0.f)
+            return;
 
-                if (checkBallWallCCD(
-                    balls[i], walls[w], remainingTime, time))
-                {
-                    if (time < earliestTime ||
-                        (hitBallA == -1 && hitBallB == -1 && hitWall == -1))
-                    {
-                        earliestTime = time;
-                        hitBallA = static_cast<int>(i);
-                        hitBallB = -1;
-                        hitWall = static_cast<int>(w);
-                    }
-                }
-            }
-        }
+        ball.setVelocity(
+            ball.getVelocity() -
+            normal * ((1.f + restitution) * velocityAlongNormal)
+        );
+    }
 
-        // Ищем столкновения между всеми парами шариков
-        for (size_t i = 0; i < balls.size(); i++)
-        {
-            for (size_t j = i + 1; j < balls.size(); j++)
-            {
-                float time = 0.f;
+    void fallbackBallStep(
+        std::vector<Ball>& balls,
+        const std::vector<Wall>& walls,
+        float remainingTime,
+        float restitution,
+        PhysicsGroup group
+    )
+    {
+        float substep =
+            remainingTime / static_cast<float>(FALLBACK_SUBSTEPS);
 
-                if (checkBallBallCCD(
-                    balls[i], balls[j], remainingTime, time))
-                {
-                    if (time < earliestTime ||
-                        (hitBallA == -1 && hitBallB == -1 && hitWall == -1))
-                    {
-                        earliestTime = time;
-                        hitBallA = static_cast<int>(i);
-                        hitBallB = static_cast<int>(j);
-                        hitWall = -1;
-                    }
-                }
-            }
-        }
-
-        // Если столкновений нет — перемещаем все шарики
-        if (hitBallA == -1)
+        for (int step = 0; step < FALLBACK_SUBSTEPS; ++step)
         {
             for (Ball& ball : balls)
-                ball.update(remainingTime);
+            {
+                if (ball.getGroup() == group)
+                    advanceBall(ball, substep);
+            }
 
+            solveSelectedBallCollisions(
+                balls,
+                walls,
+                group,
+                restitution
+            );
+        }
+    }
+
+    void fallbackBoxStep(
+        std::vector<Box>& boxes,
+        const std::vector<Wall>& walls,
+        float remainingTime,
+        float restitution,
+        PhysicsGroup group
+    )
+    {
+        float substep =
+            remainingTime / static_cast<float>(FALLBACK_SUBSTEPS);
+
+        for (int step = 0; step < FALLBACK_SUBSTEPS; ++step)
+        {
+            advanceBoxes(boxes, substep, group);
+
+            solveSelectedBoxCollisions(
+                boxes,
+                walls,
+                group,
+                restitution,
+                SOLVER_ITERATIONS
+            );
+        }
+    }
+
+    enum class EventType
+    {
+        None,
+        BoxBox,
+        BoxWall
+    };
+
+    struct CCDEvent
+    {
+        EventType type = EventType::None;
+
+        float time = std::numeric_limits<float>::infinity();
+
+        std::size_t firstBox = 0;
+        std::size_t secondBox = 0;
+        std::size_t wallIndex = 0;
+
+        sf::Vector2f normal = { 0.f, 0.f };
+    };
+}
+
+// =====================================================
+// BALL CCD
+// =====================================================
+
+namespace CCD
+{
+    void updateBallWithCCD(
+        Ball& ball,
+        const std::vector<Wall>& walls,
+        float dt,
+        float restitution
+    )
+    {
+        if (dt <= 0.f ||
+            ball.getGroup() == PhysicsGroup::Static)
+        {
             return;
         }
 
-        // Перемещаем все шарики до найденного столкновения
-        for (Ball& ball : balls)
-            ball.update(earliestTime);
+        restitution = std::clamp(restitution, 0.f, 1.f);
 
-        remainingTime -= earliestTime;
+        float remainingTime = dt;
+        int eventCount = 0;
 
-        // Столкновение со стеной
-        if (hitWall != -1)
-        {
-            Ball& ball = balls[hitBallA];
-            const Wall& wall = walls[hitWall];
-
-            sf::Vector2f p = ball.getPosition();
-            sf::Vector2f v = ball.getVelocity();
-
-            float left = wall.getPosition().x;
-            float right = left + wall.getSize().x;
-            float top = wall.getPosition().y;
-            float bottom = top + wall.getSize().y;
-            float r = ball.getRadius();
-
-            float dl = std::abs(p.x + r - left);
-            float dr = std::abs(p.x - r - right);
-            float dtp = std::abs(p.y + r - top);
-            float db = std::abs(p.y - r - bottom);
-
-            float minDistance = std::min(
-                std::min(dl, dr),
-                std::min(dtp, db)
-            );
-
-            if (minDistance == dl || minDistance == dr)
-                v.x = -v.x * restitution;
-            else
-                v.y = -v.y * restitution;
-
-            ball.setVelocity(v);
-            float speedLength = std::sqrt(v.x * v.x + v.y * v.y);
-
-            if (speedLength > 0.000001f)
-            {
-                ball.setPosition(
-                    ball.getPosition() +
-                    v / speedLength * 0.001f
-                );
-            }
-        }
-        // Столкновение двух шариков
-        else
-        {
-            Ball& a = balls[hitBallA];
-            Ball& b = balls[hitBallB];
-
-            sf::Vector2f difference =
-                b.getPosition() - a.getPosition();
-
-            float distance = std::sqrt(
-                difference.x * difference.x +
-                difference.y * difference.y
-            );
-            std::cout << "Distance: " << distance
-                << " | Relative speed: "
-                << (b.getVelocity().x - a.getVelocity().x)
-                << std::endl;
-            if (distance > 0.000001f)
-            {
-                sf::Vector2f normal = difference / distance;
-
-                sf::Vector2f relativeVelocity =
-                    b.getVelocity() - a.getVelocity();
-
-                float speed =
-                    relativeVelocity.x * normal.x +
-                    relativeVelocity.y * normal.y;
-
-                // Импульс применяем только при сближении
-                if (speed < -0.000001f)
-                {
-                    float invA = 1.f / a.getMass();
-                    float invB = 1.f / b.getMass();
-
-                    float impulseValue =
-                        -(1.f + restitution) * speed /
-                        (invA + invB);
-
-                    sf::Vector2f impulse =
-                        normal * impulseValue;
-
-                    a.setVelocity(
-                        a.getVelocity() - impulse * invA
-                    );
-
-                    b.setVelocity(
-                        b.getVelocity() + impulse * invB
-                    );
-                }
-
-                // Небольшая коррекция позиции против повторного контакта
-                const float separation = 0.001f;
-
-                a.setPosition(
-                    a.getPosition() - normal * separation * 0.5f
-                );
-
-                b.setPosition(
-                    b.getPosition() + normal * separation * 0.5f
-                );
-            }
-        }
-    }
-
-    // Если достигнут лимит столкновений, завершаем оставшийся шаг
-    for (Ball& ball : balls)
-        ball.update(remainingTime);
-}
-
-
-void CCD::solveInitialOverlaps(
-    std::vector<Ball>& balls,
-    const std::vector<Wall>& walls
-)
-{
-    // Исправляем пересечение шариков друг с другом
-    for (size_t i = 0; i < balls.size(); i++)
-    {
-        for (size_t j = i + 1; j < balls.size(); j++)
-        {
-            Collision collision = checkCollision(
-                balls[i],
-                balls[j]
-            );
-
-            if (!collision.isColliding)
-                continue;
-
-            float inverseMassA = 1.f / balls[i].getMass();
-            float inverseMassB = 1.f / balls[j].getMass();
-
-            float totalInverseMass = inverseMassA + inverseMassB;
-
-            if (totalInverseMass <= 0.f)
-                continue;
-
-            float correctionMagnitude =
-                collision.penetration / totalInverseMass;
-
-            sf::Vector2f correction =
-                collision.normal * correctionMagnitude;
-
-            balls[i].setPosition(
-                balls[i].getPosition() -
-                correction * inverseMassA
-            );
-
-            balls[j].setPosition(
-                balls[j].getPosition() +
-                correction * inverseMassB
-            );
-        }
-    }
-
-    // Исправляем пересечение шариков со стенами
-    // Только координаты, скорости не меняем
-    for (Ball& ball : balls)
-    {
         for (const Wall& wall : walls)
         {
-            sf::Vector2f pos = ball.getPosition();
-            float radius = ball.getRadius();
-
-            sf::Vector2f wallPos = wall.getPosition();
-            sf::Vector2f wallSize = wall.getSize();
-
-            float closestX = std::clamp(
-                pos.x,
-                wallPos.x,
-                wallPos.x + wallSize.x
+            resolveBallWallCollision(
+                ball,
+                wall,
+                restitution
             );
+        }
 
-            float closestY = std::clamp(
-                pos.y,
-                wallPos.y,
-                wallPos.y + wallSize.y
-            );
+        while (remainingTime > EPSILON &&
+            eventCount < MAX_CCD_EVENTS)
+        {
+            BallSweepResult earliestEvent;
+            earliestEvent.time =
+                std::numeric_limits<float>::infinity();
 
-            sf::Vector2f difference(
-                pos.x - closestX,
-                pos.y - closestY
-            );
-
-            float distanceSquared =
-                difference.x * difference.x +
-                difference.y * difference.y;
-
-            if (distanceSquared >= radius * radius)
-                continue;
-
-            float distance = std::sqrt(distanceSquared);
-
-            if (distance > 0.0001f)
+            for (const Wall& wall : walls)
             {
-                sf::Vector2f normal(
-                    difference.x / distance,
-                    difference.y / distance
-                );
+                BallSweepResult event =
+                    checkBallWallCCD(
+                        ball,
+                        wall,
+                        remainingTime
+                    );
 
-                ball.setPosition(
-                    pos + normal * (radius - distance)
-                );
+                if (event.hit &&
+                    event.time < earliestEvent.time)
+                {
+                    earliestEvent = event;
+                }
+            }
+
+            if (!earliestEvent.hit)
+            {
+                advanceBall(ball, remainingTime);
+                remainingTime = 0.f;
+                break;
+            }
+
+            advanceBall(ball, earliestEvent.time);
+            remainingTime -= earliestEvent.time;
+
+            resolveBallWallImpact(
+                ball,
+                earliestEvent.normal,
+                restitution
+            );
+
+            ball.setPosition(
+                ball.getPosition() +
+                earliestEvent.normal * EPSILON
+            );
+
+            ++eventCount;
+        }
+
+        if (remainingTime > 0.f)
+        {
+            // Для одиночного шара используем небольшие
+            // подшаги с проверкой столкновений.
+            float substep =
+                remainingTime / static_cast<float>(FALLBACK_SUBSTEPS);
+
+            for (int i = 0; i < FALLBACK_SUBSTEPS; ++i)
+            {
+                advanceBall(ball, substep);
+
+                for (const Wall& wall : walls)
+                {
+                    resolveBallWallCollision(
+                        ball,
+                        wall,
+                        restitution
+                    );
+                }
             }
         }
+    }
+
+    void updateBallsWithCCD(
+        std::vector<Ball>& balls,
+        const std::vector<Wall>& walls,
+        float dt,
+        float restitution,
+        PhysicsGroup group
+    )
+    {
+        if (dt <= 0.f || group == PhysicsGroup::Static)
+            return;
+
+        restitution = std::clamp(restitution, 0.f, 1.f);
+
+        solveSelectedBallCollisions(
+            balls,
+            walls,
+            group,
+            restitution
+        );
+
+        float remainingTime = dt;
+        int eventCount = 0;
+
+        while (remainingTime > EPSILON &&
+            eventCount < MAX_CCD_EVENTS)
+        {
+            BallSweepResult earliestBallEvent;
+            earliestBallEvent.time =
+                std::numeric_limits<float>::infinity();
+
+            BallSweepResult earliestWallEvent;
+            earliestWallEvent.time =
+                std::numeric_limits<float>::infinity();
+
+            std::size_t ballFirstIndex = 0;
+            std::size_t ballSecondIndex = 0;
+            std::size_t wallBallIndex = 0;
+
+            bool ballEventFound = false;
+            bool wallEventFound = false;
+
+            // Ball - Ball
+            for (std::size_t i = 0; i < balls.size(); ++i)
+            {
+                if (balls[i].getGroup() != group)
+                    continue;
+
+                for (std::size_t j = 0; j < balls.size(); ++j)
+                {
+                    if (i == j)
+                        continue;
+
+                    if (balls[j].getGroup() != group &&
+                        balls[j].getGroup() != PhysicsGroup::Static)
+                    {
+                        continue;
+                    }
+
+                    // Динамические пары проверяем один раз.
+                    if (balls[j].getGroup() == group && j < i)
+                        continue;
+
+                    BallSweepResult event =
+                        checkBallBallCCD(
+                            balls[i],
+                            balls[j],
+                            remainingTime
+                        );
+
+                    if (event.hit &&
+                        event.time < earliestBallEvent.time)
+                    {
+                        earliestBallEvent = event;
+                        ballFirstIndex = i;
+                        ballSecondIndex = j;
+                        ballEventFound = true;
+                    }
+                }
+            }
+
+            // Ball - Wall
+            for (std::size_t i = 0; i < balls.size(); ++i)
+            {
+                if (balls[i].getGroup() != group)
+                    continue;
+
+                for (const Wall& wall : walls)
+                {
+                    BallSweepResult event =
+                        checkBallWallCCD(
+                            balls[i],
+                            wall,
+                            remainingTime
+                        );
+
+                    if (event.hit &&
+                        event.time < earliestWallEvent.time)
+                    {
+                        earliestWallEvent = event;
+                        wallBallIndex = i;
+                        wallEventFound = true;
+                    }
+                }
+            }
+
+            bool useBallEvent =
+                ballEventFound &&
+                (!wallEventFound ||
+                    earliestBallEvent.time <= earliestWallEvent.time);
+
+            if (!ballEventFound && !wallEventFound)
+            {
+                for (Ball& ball : balls)
+                {
+                    if (ball.getGroup() == group)
+                        advanceBall(ball, remainingTime);
+                }
+
+                remainingTime = 0.f;
+                break;
+            }
+
+            float eventTime = useBallEvent
+                ? earliestBallEvent.time
+                : earliestWallEvent.time;
+
+            for (Ball& ball : balls)
+            {
+                if (ball.getGroup() == group)
+                    advanceBall(ball, eventTime);
+            }
+
+            remainingTime -= eventTime;
+
+            if (useBallEvent)
+            {
+                resolveBallBallImpact(
+                    balls[ballFirstIndex],
+                    balls[ballSecondIndex],
+                    earliestBallEvent.normal,
+                    restitution
+                );
+
+                float invA = ballInverseMass(balls[ballFirstIndex]);
+                float invB = ballInverseMass(balls[ballSecondIndex]);
+
+                float totalInvMass = invA + invB;
+
+                if (totalInvMass > EPSILON)
+                {
+                    sf::Vector2f correction =
+                        earliestBallEvent.normal * EPSILON;
+
+                    if (invA > 0.f)
+                    {
+                        balls[ballFirstIndex].setPosition(
+                            balls[ballFirstIndex].getPosition() -
+                            correction * (invA / totalInvMass)
+                        );
+                    }
+
+                    if (invB > 0.f)
+                    {
+                        balls[ballSecondIndex].setPosition(
+                            balls[ballSecondIndex].getPosition() +
+                            correction * (invB / totalInvMass)
+                        );
+                    }
+                }
+            }
+            else
+            {
+                resolveBallWallImpact(
+                    balls[wallBallIndex],
+                    earliestWallEvent.normal,
+                    restitution
+                );
+
+                balls[wallBallIndex].setPosition(
+                    balls[wallBallIndex].getPosition() +
+                    earliestWallEvent.normal * EPSILON
+                );
+            }
+
+            ++eventCount;
+        }
+
+        if (remainingTime > 0.f)
+        {
+            fallbackBallStep(
+                balls,
+                walls,
+                remainingTime,
+                restitution,
+                group
+            );
+        }
+
+        solveSelectedBallCollisions(
+            balls,
+            walls,
+            group,
+            restitution
+        );
+    }
+
+    // =================================================
+    // BOX CCD
+    // =================================================
+
+    void updateBoxesWithCCD(
+        std::vector<Box>& boxes,
+        const std::vector<Wall>& walls,
+        float dt,
+        float restitution,
+        PhysicsGroup group
+    )
+    {
+        if (dt <= 0.f ||
+            group == PhysicsGroup::Static)
+        {
+            return;
+        }
+
+        restitution = std::clamp(restitution, 0.f, 1.f);
+
+        solveSelectedBoxCollisions(
+            boxes,
+            walls,
+            group,
+            restitution,
+            SOLVER_ITERATIONS
+        );
+
+        float remainingTime = dt;
+        int eventCount = 0;
+
+        while (remainingTime > EPSILON &&
+            eventCount < MAX_CCD_EVENTS)
+        {
+            CCDEvent earliestEvent;
+
+            // Box - Box
+            for (std::size_t i = 0; i < boxes.size(); ++i)
+            {
+                if (boxes[i].getGroup() != group)
+                    continue;
+
+                for (std::size_t j = 0; j < boxes.size(); ++j)
+                {
+                    if (i == j)
+                        continue;
+
+                    if (boxes[j].getGroup() != group &&
+                        boxes[j].getGroup() != PhysicsGroup::Static)
+                    {
+                        continue;
+                    }
+
+                    if (boxes[j].getGroup() == group && j < i)
+                        continue;
+
+                    BoxSweepResult result =
+                        checkBoxBoxCCD(
+                            boxes[i],
+                            boxes[j],
+                            remainingTime
+                        );
+
+                    if (result.hit &&
+                        result.time < earliestEvent.time)
+                    {
+                        earliestEvent.type = EventType::BoxBox;
+                        earliestEvent.time = result.time;
+                        earliestEvent.firstBox = i;
+                        earliestEvent.secondBox = j;
+                        earliestEvent.normal = result.normal;
+                    }
+                }
+            }
+
+            // Box - Wall
+            for (std::size_t i = 0; i < boxes.size(); ++i)
+            {
+                if (boxes[i].getGroup() != group)
+                    continue;
+
+                for (std::size_t j = 0; j < walls.size(); ++j)
+                {
+                    BoxWallSweepResult result =
+                        checkBoxWallCCD(
+                            boxes[i],
+                            walls[j],
+                            remainingTime
+                        );
+
+                    if (result.hit &&
+                        result.time < earliestEvent.time)
+                    {
+                        earliestEvent.type = EventType::BoxWall;
+                        earliestEvent.time = result.time;
+                        earliestEvent.firstBox = i;
+                        earliestEvent.wallIndex = j;
+                        earliestEvent.normal = result.normal;
+                    }
+                }
+            }
+
+            if (earliestEvent.type == EventType::None)
+            {
+                advanceBoxes(
+                    boxes,
+                    remainingTime,
+                    group
+                );
+
+                remainingTime = 0.f;
+                break;
+            }
+
+            advanceBoxes(
+                boxes,
+                earliestEvent.time,
+                group
+            );
+
+            remainingTime -= earliestEvent.time;
+
+            if (earliestEvent.type == EventType::BoxBox)
+            {
+                resolveBoxBoxImpact(
+                    boxes[earliestEvent.firstBox],
+                    boxes[earliestEvent.secondBox],
+                    earliestEvent.normal,
+                    restitution
+                );
+            }
+            else
+            {
+                resolveBoxWallImpact(
+                    boxes[earliestEvent.firstBox],
+                    earliestEvent.normal,
+                    restitution
+                );
+            }
+
+            solveSelectedBoxCollisions(
+                boxes,
+                walls,
+                group,
+                restitution,
+                SOLVER_ITERATIONS
+            );
+
+            ++eventCount;
+        }
+
+        if (remainingTime > 0.f)
+        {
+            fallbackBoxStep(
+                boxes,
+                walls,
+                remainingTime,
+                restitution,
+                group
+            );
+        }
+
+        solveSelectedBoxCollisions(
+            boxes,
+            walls,
+            group,
+            restitution,
+            SOLVER_ITERATIONS
+        );
+    }
+}
+// =====================================================
+// GLOBAL CCD FOR MULTI-RATE
+// =====================================================
+
+namespace CCD
+{
+    // -------------------------------------------------
+    // Общая обработка столкновений шаров
+    // -------------------------------------------------
+
+    void updateAllBallsWithCCD(
+        std::vector<Ball>& balls,
+        const std::vector<Wall>& walls,
+        float dt,
+        float restitution
+    )
+    {
+        if (dt <= 0.f)
+            return;
+
+        restitution = std::clamp(restitution, 0.f, 1.f);
+
+        auto advanceAll = [&](float time)
+            {
+                for (Ball& ball : balls)
+                {
+                    if (ball.getGroup() != PhysicsGroup::Static)
+                        ball.update(time);
+                }
+            };
+
+        auto solveAll = [&]()
+            {
+                // Несколько проходов для устранения пересечений.
+                for (int iteration = 0; iteration < 4; ++iteration)
+                {
+                    for (std::size_t i = 0; i < balls.size(); ++i)
+                    {
+                        for (std::size_t j = i + 1; j < balls.size(); ++j)
+                        {
+                            if (balls[i].getGroup() == PhysicsGroup::Static &&
+                                balls[j].getGroup() == PhysicsGroup::Static)
+                            {
+                                continue;
+                            }
+
+                            resolveCollision(
+                                balls[i],
+                                balls[j],
+                                restitution
+                            );
+                        }
+                    }
+
+                    for (Ball& ball : balls)
+                    {
+                        if (ball.getGroup() == PhysicsGroup::Static)
+                            continue;
+
+                        for (const Wall& wall : walls)
+                        {
+                            resolveBallWallCollision(
+                                ball,
+                                wall,
+                                restitution
+                            );
+                        }
+                    }
+                }
+            };
+
+        solveAll();
+
+        float remainingTime = dt;
+        int eventCount = 0;
+
+        while (remainingTime > EPSILON &&
+            eventCount < MAX_CCD_EVENTS)
+        {
+            enum class Type
+            {
+                None,
+                BallBall,
+                BallWall
+            };
+
+            Type eventType = Type::None;
+
+            float earliestTime =
+                std::numeric_limits<float>::infinity();
+
+            std::size_t firstIndex = 0;
+            std::size_t secondIndex = 0;
+            std::size_t wallIndex = 0;
+
+            sf::Vector2f eventNormal(0.f, 0.f);
+
+            // Поиск столкновений шаров между собой.
+            for (std::size_t i = 0; i < balls.size(); ++i)
+            {
+                if (balls[i].getGroup() == PhysicsGroup::Static)
+                    continue;
+
+                for (std::size_t j = i + 1; j < balls.size(); ++j)
+                {
+                    if (balls[j].getGroup() == PhysicsGroup::Static &&
+                        balls[i].getGroup() == PhysicsGroup::Static)
+                    {
+                        continue;
+                    }
+
+                    BallSweepResult result =
+                        checkBallBallCCD(
+                            balls[i],
+                            balls[j],
+                            remainingTime
+                        );
+
+                    if (result.hit && result.time < earliestTime)
+                    {
+                        earliestTime = result.time;
+                        eventType = Type::BallBall;
+                        firstIndex = i;
+                        secondIndex = j;
+                        eventNormal = result.normal;
+                    }
+                }
+            }
+
+            // Поиск столкновений шаров со стенами.
+            for (std::size_t i = 0; i < balls.size(); ++i)
+            {
+                if (balls[i].getGroup() == PhysicsGroup::Static)
+                    continue;
+
+                for (std::size_t j = 0; j < walls.size(); ++j)
+                {
+                    BallSweepResult result =
+                        checkBallWallCCD(
+                            balls[i],
+                            walls[j],
+                            remainingTime
+                        );
+
+                    if (result.hit && result.time < earliestTime)
+                    {
+                        earliestTime = result.time;
+                        eventType = Type::BallWall;
+                        firstIndex = i;
+                        wallIndex = j;
+                        eventNormal = result.normal;
+                    }
+                }
+            }
+
+            // Столкновений больше нет.
+            if (eventType == Type::None)
+            {
+                advanceAll(remainingTime);
+                remainingTime = 0.f;
+                break;
+            }
+
+            // Перемещаем ВСЕ динамические шары
+            // к одному и тому же моменту столкновения.
+            advanceAll(earliestTime);
+            remainingTime -= earliestTime;
+
+            if (eventType == Type::BallBall)
+            {
+                resolveBallBallImpact(
+                    balls[firstIndex],
+                    balls[secondIndex],
+                    eventNormal,
+                    restitution
+                );
+
+                float invA = ballInverseMass(balls[firstIndex]);
+                float invB = ballInverseMass(balls[secondIndex]);
+
+                float totalInvMass = invA + invB;
+
+                if (totalInvMass > EPSILON)
+                {
+                    sf::Vector2f correction =
+                        eventNormal * EPSILON;
+
+                    if (invA > 0.f)
+                    {
+                        balls[firstIndex].setPosition(
+                            balls[firstIndex].getPosition() -
+                            correction * (invA / totalInvMass)
+                        );
+                    }
+
+                    if (invB > 0.f)
+                    {
+                        balls[secondIndex].setPosition(
+                            balls[secondIndex].getPosition() +
+                            correction * (invB / totalInvMass)
+                        );
+                    }
+                }
+            }
+            else
+            {
+                resolveBallWallImpact(
+                    balls[firstIndex],
+                    eventNormal,
+                    restitution
+                );
+
+                balls[firstIndex].setPosition(
+                    balls[firstIndex].getPosition() +
+                    eventNormal * EPSILON
+                );
+            }
+
+            ++eventCount;
+        }
+
+        // Запасной режим, если превышено число событий CCD.
+        if (remainingTime > 0.f)
+        {
+            float substep =
+                remainingTime / static_cast<float>(FALLBACK_SUBSTEPS);
+
+            for (int step = 0; step < FALLBACK_SUBSTEPS; ++step)
+            {
+                advanceAll(substep);
+                solveAll();
+            }
+        }
+
+        solveAll();
+    }
+
+    // -------------------------------------------------
+    // Общая обработка столкновений прямоугольников
+    // -------------------------------------------------
+
+    void updateAllBoxesWithCCD(
+        std::vector<Box>& boxes,
+        const std::vector<Wall>& walls,
+        float dt,
+        float restitution
+    )
+    {
+        if (dt <= 0.f)
+            return;
+
+        restitution = std::clamp(restitution, 0.f, 1.f);
+
+        auto advanceAll = [&](float time)
+            {
+                for (Box& box : boxes)
+                {
+                    if (box.getGroup() != PhysicsGroup::Static)
+                        box.update(time);
+                }
+            };
+
+        auto solveAll = [&]()
+            {
+                ::solveBoxCollisions(
+                    boxes,
+                    walls,
+                    restitution,
+                    SOLVER_ITERATIONS
+                );
+            };
+
+        solveAll();
+
+        float remainingTime = dt;
+        int eventCount = 0;
+
+        while (remainingTime > EPSILON &&
+            eventCount < MAX_CCD_EVENTS)
+        {
+            CCDEvent earliestEvent;
+
+            // Box - Box: рассматриваем все динамические группы.
+            for (std::size_t i = 0; i < boxes.size(); ++i)
+            {
+                if (boxes[i].getGroup() == PhysicsGroup::Static)
+                    continue;
+
+                for (std::size_t j = i + 1; j < boxes.size(); ++j)
+                {
+                    if (boxes[j].getGroup() == PhysicsGroup::Static &&
+                        boxes[i].getGroup() == PhysicsGroup::Static)
+                    {
+                        continue;
+                    }
+
+                    BoxSweepResult result =
+                        checkBoxBoxCCD(
+                            boxes[i],
+                            boxes[j],
+                            remainingTime
+                        );
+
+                    if (result.hit && result.time < earliestEvent.time)
+                    {
+                        earliestEvent.type = EventType::BoxBox;
+                        earliestEvent.time = result.time;
+                        earliestEvent.firstBox = i;
+                        earliestEvent.secondBox = j;
+                        earliestEvent.normal = result.normal;
+                    }
+                }
+            }
+
+            // Box - Wall.
+            for (std::size_t i = 0; i < boxes.size(); ++i)
+            {
+                if (boxes[i].getGroup() == PhysicsGroup::Static)
+                    continue;
+
+                for (std::size_t j = 0; j < walls.size(); ++j)
+                {
+                    BoxWallSweepResult result =
+                        checkBoxWallCCD(
+                            boxes[i],
+                            walls[j],
+                            remainingTime
+                        );
+
+                    if (result.hit && result.time < earliestEvent.time)
+                    {
+                        earliestEvent.type = EventType::BoxWall;
+                        earliestEvent.time = result.time;
+                        earliestEvent.firstBox = i;
+                        earliestEvent.wallIndex = j;
+                        earliestEvent.normal = result.normal;
+                    }
+                }
+            }
+
+            if (earliestEvent.type == EventType::None)
+            {
+                advanceAll(remainingTime);
+                remainingTime = 0.f;
+                break;
+            }
+
+            // Все динамические прямоугольники перемещаются
+            // к одному моменту времени.
+            advanceAll(earliestEvent.time);
+            remainingTime -= earliestEvent.time;
+
+            if (earliestEvent.type == EventType::BoxBox)
+            {
+                resolveBoxBoxImpact(
+                    boxes[earliestEvent.firstBox],
+                    boxes[earliestEvent.secondBox],
+                    earliestEvent.normal,
+                    restitution
+                );
+            }
+            else
+            {
+                resolveBoxWallImpact(
+                    boxes[earliestEvent.firstBox],
+                    earliestEvent.normal,
+                    restitution
+                );
+            }
+
+            solveAll();
+
+            ++eventCount;
+        }
+
+        // Запасные подшаги при большом количестве столкновений.
+        if (remainingTime > 0.f)
+        {
+            float substep =
+                remainingTime / static_cast<float>(FALLBACK_SUBSTEPS);
+
+            for (int step = 0; step < FALLBACK_SUBSTEPS; ++step)
+            {
+                advanceAll(substep);
+                solveAll();
+            }
+        }
+
+        solveAll();
     }
 }

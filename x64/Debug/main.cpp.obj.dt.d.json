@@ -214,12 +214,12 @@
             "c:\\program files\\sfml-2.6.2\\include\\sfml\\graphics\\sprite.hpp",
             "c:\\program files\\sfml-2.6.2\\include\\sfml\\graphics\\text.hpp",
             "c:\\program files\\sfml-2.6.2\\include\\sfml\\graphics\\vertexbuffer.hpp",
-            "c:\\users\\eeliz\\desktop\\github\\phisics3\\phisics3\\ccd.h",
+            "c:\\users\\eeliz\\desktop\\github\\phisics3\\phisics3\\world.h",
             "c:\\users\\eeliz\\desktop\\github\\phisics3\\phisics3\\ball.h",
             "c:\\users\\eeliz\\desktop\\github\\phisics3\\phisics3\\physicsgroup.h",
+            "c:\\users\\eeliz\\desktop\\github\\phisics3\\phisics3\\box.h",
             "c:\\users\\eeliz\\desktop\\github\\phisics3\\phisics3\\wall.h",
-            "c:\\users\\eeliz\\desktop\\github\\phisics3\\phisics3\\world.h",
-            "c:\\users\\eeliz\\desktop\\github\\phisics3\\phisics3\\box.h"
+            "c:\\users\\eeliz\\desktop\\github\\phisics3\\phisics3\\multirate.h"
         ],
         "ImportedModules": [],
         "ImportedHeaderUnits": []

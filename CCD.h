@@ -1,34 +1,49 @@
 #pragma once
 
 #include "Ball.h"
+#include "Box.h"
 #include "Wall.h"
+#include "PhysicsGroup.h"
+
 #include <vector>
 
-class CCD
+namespace CCD
 {
-public:
-    static bool checkBallWallCCD(
-        const Ball& ball,
-        const Wall& wall,
-        float dt,
-        float& collisionTime
-    );
-
-    static void updateBallWithCCD(
+    void updateBallWithCCD(
         Ball& ball,
         const std::vector<Wall>& walls,
         float dt,
         float restitution
     );
-    static bool checkBallBallCCD(const Ball& a, const Ball& b, float dt, float& collisionTime);
 
-    static void updateBallPairWithCCD(Ball& a, Ball& b, float dt, float restitution);
+    void updateBallsWithCCD(
+        std::vector<Ball>& balls,
+        const std::vector<Wall>& walls,
+        float dt,
+        float restitution,
+        PhysicsGroup group
+    );
 
-    static void updateBallsWithCCD(
+    void updateBoxesWithCCD(
+        std::vector<Box>& boxes,
+        const std::vector<Wall>& walls,
+        float dt,
+        float restitution,
+        PhysicsGroup group
+    );
+
+    // Общий CCD: учитывает Normal и Fast одновременно.
+    void updateAllBallsWithCCD(
         std::vector<Ball>& balls,
         const std::vector<Wall>& walls,
         float dt,
         float restitution
     );
-    static void solveInitialOverlaps(std::vector<Ball>& balls, const std::vector<Wall>& walls);
-};
+
+    void updateAllBoxesWithCCD(
+        std::vector<Box>& boxes,
+        const std::vector<Wall>& walls,
+        float dt,
+        float restitution
+    );
+}

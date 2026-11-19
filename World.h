@@ -1,13 +1,16 @@
 
 #pragma once
 
-#include "Ball.h"
-#include "Wall.h"
-#include "Box.h"
-#include "MultiRate.h"
-
 #include <vector>
+
 #include <SFML/Graphics/RenderWindow.hpp>
+#include <SFML/System/Vector2.hpp>
+
+#include "Ball.h"
+#include "Box.h"
+#include "Wall.h"
+#include "PhysicsGroup.h"
+#include "MultiRate.h"
 
 class World
 {
@@ -15,14 +18,45 @@ private:
     std::vector<Ball> balls;
     std::vector<Wall> walls;
     std::vector<Box> boxes;
+
     MultiRate multiRate;
-    void updatePhysicsStep(
-        float dt,
+
+    sf::Vector2f gravity = { 0.f, 980.f };
+
+    // Теневое физическое состояние.
+    // Используется для общего CCD Normal и Fast.
+    std::vector<Ball> shadowBalls;
+    std::vector<Box> shadowBoxes;
+
+    bool shadowInitialized = false;
+
+    void applyGravity(PhysicsGroup group, float dt);
+    void updateGroup(PhysicsGroup group, float dt);
+
+    void solveBallCollisions(
         float restitution,
-        PhysicsGroup group,
-        bool updateVelocity,
-        bool updatePosition
+        int iterations
     );
+
+    void solveBoxCollisions(
+        float restitution,
+        int iterations
+    );
+
+    void synchronizeBodies(
+        float dt,
+        float restitution
+    );
+
+    void initializeShadowState();
+
+    void updateShadowState(
+        float fastDt,
+        float restitution
+    );
+
+    void copyFastBodiesFromShadow();
+    void copyNormalBodiesFromShadow();
 
 public:
     void addBall(const Ball& ball);
@@ -31,9 +65,24 @@ public:
 
     void update(float dt, float restitution);
 
-    void draw(sf::RenderWindow& window) const;
-    void updateWithCCD(float dt, float restitution);
-    void updateWithFullCCD(float dt, float restitution);
-    void updateMultiRate(float frameDt, float restitution);
+    void updateWithCCD(
+        float dt,
+        float restitution
+    );
 
+    void updateWithFullCCD(
+        float dt,
+        float restitution
+    );
+
+    void updateMultiRate(
+        float frameDt,
+        float restitution
+    );
+
+    void draw(sf::RenderWindow& window) const;
+
+    int getFastStepsThisFrame() const;
+    int getFastStepsTotal() const;
+    int getNormalStepsTotal() const;
 };
