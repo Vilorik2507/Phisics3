@@ -214,7 +214,8 @@
             "c:\\program files\\sfml-2.6.2\\include\\sfml\\graphics\\glsl.inl",
             "c:\\program files\\sfml-2.6.2\\include\\sfml\\graphics\\sprite.hpp",
             "c:\\program files\\sfml-2.6.2\\include\\sfml\\graphics\\text.hpp",
-            "c:\\program files\\sfml-2.6.2\\include\\sfml\\graphics\\vertexbuffer.hpp"
+            "c:\\program files\\sfml-2.6.2\\include\\sfml\\graphics\\vertexbuffer.hpp",
+            "c:\\users\\eeliz\\desktop\\github\\phisics3\\phisics3\\physicsgroup.h"
         ],
         "ImportedModules": [],
         "ImportedHeaderUnits": []

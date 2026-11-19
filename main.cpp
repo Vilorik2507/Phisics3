@@ -29,32 +29,18 @@ int main()
         sf::Vector2f(400.f, 10.f)
     ));
 
-    world.addBall(Ball(
-        sf::Vector2f(300.f, 300.f),
-        sf::Vector2f(100.f, 0.f),
-        20.f,
-        1.f
-    ));
-
-    world.addBall(Ball(
-        sf::Vector2f(335.f, 300.f),
-        sf::Vector2f(-100.f, 0.f),
-        20.f,
-        1.f
-    ));
-    world.addBox(Box(
+    Box box(
         sf::Vector2f(400.f, 300.f),
-        sf::Vector2f(80.f, 40.f),
+        sf::Vector2f(40.f, 40.f),
         sf::Vector2f(0.f, 0.f),
-        5.f
-    ));
+        2.f
+    );
 
-    world.addBox(Box(
-        sf::Vector2f(550.f, 300.f),
-        sf::Vector2f(-50.f, 0.f),
-        sf::Vector2f(0.f, 0.f),
-        5.f
-    ));
+    box.setGroup(PhysicsGroup::Fast);
+
+    world.addBox(box);
+   
+
     sf::Clock clock;
 
     while (window.isOpen())

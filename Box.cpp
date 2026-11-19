@@ -19,7 +19,7 @@ void Box::update(float dt)
     position += velocity * dt;
 }
 
-void Box::draw(sf::RenderWindow& window)
+void Box::draw(sf::RenderWindow& window) const
 {
     sf::RectangleShape rectangle(size);
 

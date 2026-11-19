@@ -2,6 +2,7 @@
 #pragma once
 
 #include <SFML/Graphics.hpp>
+#include "PhysicsGroup.h"
 
 class Box
 {
@@ -9,6 +10,7 @@ private:
     sf::Vector2f position;
     sf::Vector2f size;
     sf::Vector2f velocity;
+    PhysicsGroup group = PhysicsGroup::Normal;
 
     float mass;
 
@@ -21,7 +23,7 @@ public:
     );
 
     void update(float dt);
-    void draw(sf::RenderWindow& window);
+    void draw(sf::RenderWindow& window) const;
 
     sf::Vector2f getPosition() const;
     sf::Vector2f getSize() const;
@@ -31,4 +33,14 @@ public:
 
     void setPosition(sf::Vector2f newPosition);
     void setVelocity(sf::Vector2f newVelocity);
+
+    void setGroup(PhysicsGroup newGroup)
+    {
+        group = newGroup;
+    }
+
+    PhysicsGroup getGroup() const
+    {
+        return group;
+    }
 };

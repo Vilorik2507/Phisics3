@@ -1,10 +1,12 @@
 #pragma once
 #include <SFML/System/Vector2.hpp>
 #include <SFML/Graphics/RenderWindow.hpp>
+#include "PhysicsGroup.h"
 class Ball {
 private:
 	sf::Vector2f position;
 	sf::Vector2f velocity;
+	PhysicsGroup group = PhysicsGroup::Normal;
 	float radius;
 	float mass;
 public:
@@ -19,4 +21,14 @@ public:
 	void setVelocity(sf::Vector2f newVelocity);
 
 	void draw(sf::RenderWindow& window) const;
+
+	void setGroup(PhysicsGroup newGroup)
+	{
+		group = newGroup;
+	}
+
+	PhysicsGroup getGroup() const
+	{
+		return group;
+	}
 };

@@ -159,6 +159,7 @@ sfml-window-d.lib
     <ClInclude Include="Box.h" />
     <ClInclude Include="CCD.h" />
     <ClInclude Include="Collision.h" />
+    <ClInclude Include="PhysicsGroup.h" />
     <ClInclude Include="Wall.h" />
     <ClInclude Include="World.h" />
   </ItemGroup>

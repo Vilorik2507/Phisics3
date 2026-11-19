@@ -4,6 +4,7 @@
 #include "Ball.h"
 #include "Wall.h"
 #include "Box.h"
+#include "MultiRate.h"
 
 #include <vector>
 #include <SFML/Graphics/RenderWindow.hpp>
@@ -14,6 +15,14 @@ private:
     std::vector<Ball> balls;
     std::vector<Wall> walls;
     std::vector<Box> boxes;
+    MultiRate multiRate;
+    void updatePhysicsStep(
+        float dt,
+        float restitution,
+        PhysicsGroup group,
+        bool updateVelocity,
+        bool updatePosition
+    );
 
 public:
     void addBall(const Ball& ball);
@@ -25,4 +34,6 @@ public:
     void draw(sf::RenderWindow& window) const;
     void updateWithCCD(float dt, float restitution);
     void updateWithFullCCD(float dt, float restitution);
+    void updateMultiRate(float frameDt, float restitution);
+
 };
